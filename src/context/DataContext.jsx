@@ -1,231 +1,302 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { CLIENTS as INITIAL_CLIENTS, USERS, ASSETS as INITIAL_ASSETS, INVENTORY as INITIAL_INVENTORY, TRANSACTIONS as INITIAL_TRANSACTIONS } from '../data/mockData';
+import { supabase } from '../lib/supabase';
 
 const DataContext = createContext(null);
 
 export const useData = () => useContext(DataContext);
 
 export const DataProvider = ({ children }) => {
-    // --- AUTOMATION: Check Campaign Statuses ---
-    const checkCampaignStatus = (currentQuotes) => {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
+    // --- STATE ---
+    const [clients, setClients] = useState([]);
+    const [assets, setAssets] = useState([]);
+    const [quotes, setQuotes] = useState([]);
+    const [maintenances, setMaintenances] = useState([]);
+    const [inventory, setInventory] = useState([]);
+    const [transactions, setTransactions] = useState([]);
+    const [loading, setLoading] = useState(true);
 
-        return currentQuotes.map(q => {
-            // Only process approved, active, or finalized quotes (skip drafts/lost)
-            if (['rascunho', 'enviado', 'perdido'].includes(q.status)) return q;
+    // --- FETCH DATA ---
+    useEffect(() => {
+        const fetchData = async () => {
+            setLoading(true);
+            try {
+                const [
+                    { data: clientsData },
+                    { data: assetsData },
+                    { data: quotesData },
+                    { data: maintenancesData },
+                    { data: inventoryData },
+                    { data: transactionsData }
+                ] = await Promise.all([
+                    supabase.from('clients').select('*'),
+                    supabase.from('assets').select('*'),
+                    supabase.from('quotes').select('*'),
+                    supabase.from('maintenances').select('*'),
+                    supabase.from('inventory').select('*'),
+                    supabase.from('transactions').select('*')
+                ]);
 
-            if (!q.startDate || !q.endDate) return q;
+                if (clientsData) setClients(clientsData);
+                if (assetsData) setAssets(assetsData);
+                if (quotesData) setQuotes(processQuotes(quotesData));
+                if (maintenancesData) setMaintenances(maintenancesData);
+                if (inventoryData) setInventory(inventoryData);
+                if (transactionsData) setTransactions(transactionsData);
 
-            const start = new Date(q.startDate);
-            const end = new Date(q.endDate);
-            // Adjust end date to be inclusive (end of day)
-            end.setHours(23, 59, 59, 999);
-
-            let newStatus = q.status;
-
-            if (today > end) {
-                newStatus = 'finalizado';
-            } else if (today >= start && today <= end) {
-                // Only move to 'ativo' if it was 'aprovado' or already 'ativo'
-                // (Don't accidentally reactivate a manually paused/cancelled one if we had that status)
-                if (q.status === 'aprovado' || q.status === 'ativo') {
-                    newStatus = 'ativo';
-                }
-            } else if (today < start && q.status === 'ativo') {
-                // If by some mistake it was active but start date is future (dates changed?)
-                newStatus = 'aprovado'; // Revert to approved/scheduled
+            } catch (error) {
+                console.error("Error fetching data:", error);
+            } finally {
+                setLoading(false);
             }
+        };
 
-            if (newStatus !== q.status) {
-                return { ...q, status: newStatus };
+        fetchData();
+    }, []);
+
+    // --- HELPERS ---
+    const processQuotes = (rawQuotes) => {
+        return rawQuotes.map(q => ({
+            ...q,
+            // Map snake_case to camelCase
+            campaignName: q.campaign_name,
+            controlNumber: q.control_number,
+            startDate: q.start_date,
+            endDate: q.end_date,
+            discountPct: q.discount_pct,
+            mediaStatus: q.media_status,
+            piGeneratedAt: q.pi_generated_at,
+            createdAt: q.created_at,
+            // Ensure assets/client are accessible (they are JSONB so they come as objects)
+            client: q.client,
+            assets: q.assets
+        }));
+    };
+
+    // --- CLIENTS ACTIONS ---
+    // --- CLIENTS ACTIONS ---
+    const addClient = async (client) => {
+        const result = await supabase.from('clients').insert([client]).select();
+        const { data, error } = result;
+        if (!error && data) setClients(prev => [...prev, data[0]]);
+        return result;
+    };
+
+    const updateClient = async (updatedClient) => {
+        const result = await supabase.from('clients').update(updatedClient).eq('id', updatedClient.id);
+        const { error } = result;
+        if (!error) setClients(prev => prev.map(c => c.id === updatedClient.id ? updatedClient : c));
+        return result;
+    };
+
+    const deleteClient = async (id) => {
+        const result = await supabase.from('clients').delete().eq('id', id);
+        const { error } = result;
+        if (!error) setClients(prev => prev.filter(c => c.id !== id));
+        return result;
+    };
+
+    const importClients = async (newClients) => {
+        try {
+            // Prepare data: ensure ID exists and sanitation
+            const preparedClients = newClients.map(c => ({
+                ...c,
+                id: c.id ? c.id : self.crypto.randomUUID(),
+                // partial sanitation
+                health_score: c.health_score === '' ? null : c.health_score,
+                credit_limit: c.credit_limit === '' ? null : c.credit_limit,
+                commission_rate: c.commission_rate === '' ? null : c.commission_rate,
+                parent_id: c.parent_id === '' ? null : c.parent_id
+            }));
+
+            // Bulk insert
+            const { data, error } = await supabase.from('clients').upsert(preparedClients).select();
+
+            if (error) throw error;
+
+            if (data) {
+                // Re-fetch to ensure sync
+                const { data: allClients, error: fetchError } = await supabase.from('clients').select('*');
+                if (fetchError) throw fetchError;
+                if (allClients) setClients(allClients);
             }
-            return q;
-        });
-    };
-    // CLIENTS STATE
-    const [clients, setClients] = useState(INITIAL_CLIENTS);
-
-    const addClient = (client) => {
-        setClients(prev => [...prev, { ...client, id: `c${Date.now()}` }]);
+            return { data, error: null };
+        } catch (error) {
+            console.error("Error importing clients:", error);
+            return { data: null, error };
+        }
     };
 
-    const updateClient = (updatedClient) => {
-        setClients(prev => prev.map(c => c.id === updatedClient.id ? updatedClient : c));
+    // --- ASSETS ACTIONS ---
+    const addAsset = async (asset) => {
+        const { data, error } = await supabase.from('assets').insert([asset]).select();
+        if (error) {
+            console.error("Supabase Error (addAsset):", error);
+            alert(`Erro ao adicionar ativo: ${error.message}`);
+            return; // Exit on error
+        }
+        if (data) setAssets(prev => [...prev, data[0]]);
     };
 
-    const deleteClient = (id) => {
-        setClients(prev => prev.filter(c => c.id !== id));
-    };
-
-    const importClients = (newClients) => {
-        setClients(prev => {
-            const clientMap = new Map(prev.map(c => [c.id, c]));
-
-            newClients.forEach(newClient => {
-                const id = newClient.id || `c${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
-                clientMap.set(id, { ...clientMap.get(id), ...newClient, id });
-            });
-            return Array.from(clientMap.values());
-        });
-    };
-
-    // ASSETS STATE
-    const [assets, setAssets] = useState(INITIAL_ASSETS);
-
-    const addAsset = (asset) => {
-        setAssets(prev => [...prev, { ...asset, id: `a${Date.now()}` }]);
-    };
-
-    const updateAsset = (updatedAsset) => {
+    const updateAsset = async (updatedAsset) => {
+        const { error } = await supabase.from('assets').update(updatedAsset).eq('id', updatedAsset.id);
+        if (error) {
+            console.error("Supabase Error (updateAsset):", error);
+            alert(`Erro ao atualizar ativo: ${error.message}`);
+            return;
+        }
         setAssets(prev => prev.map(a => a.id === updatedAsset.id ? updatedAsset : a));
     };
 
-    const deleteAsset = (id) => {
+    const deleteAsset = async (id) => {
+        const { error } = await supabase.from('assets').delete().eq('id', id);
+        if (error) {
+            console.error("Supabase Error (deleteAsset):", error);
+            alert(`Erro ao excluir ativo: ${error.message}`);
+            return;
+        }
         setAssets(prev => prev.filter(a => a.id !== id));
     };
 
-    const importAssets = (newAssets) => {
-        setAssets(prev => {
-            const assetMap = new Map(prev.map(a => [a.id, a]));
+    const importAssets = async (newAssets) => {
+        // Split into updates (have IDs) and inserts (no IDs) to avoid ragged array issues
+        // (Supabase might pad missing keys with NULL if mixing rows with/without ID, causing NOT NULL violation)
+        const toUpdate = newAssets.filter(a => a.id);
+        const toInsert = newAssets.filter(a => !a.id);
 
-            newAssets.forEach(newAsset => {
-                // Determine ID: use existing, or generate new if missing
-                const id = newAsset.id || `a${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+        let errors = [];
 
-                // If it exists, merge; if not, create new
-                // Ensure we handle basic type conversion if needed here, or rely on import logic
-                assetMap.set(id, { ...assetMap.get(id), ...newAsset, id });
-            });
-            return Array.from(assetMap.values());
-        });
+        try {
+            if (toUpdate.length > 0) {
+                const { error: errUp } = await supabase.from('assets').upsert(toUpdate).select();
+                if (errUp) errors.push("(Atualização) " + errUp.message);
+            }
+
+            if (toInsert.length > 0) {
+                const { error: errIn } = await supabase.from('assets').insert(toInsert).select();
+                if (errIn) errors.push("(Inserção) " + errIn.message);
+            }
+
+            // Refresh data if anything succeeded or if we want consistent state
+            const { data: allAssets } = await supabase.from('assets').select('*');
+            if (allAssets) setAssets(allAssets);
+
+            if (errors.length > 0) {
+                return { error: { message: errors.join(" | ") } };
+            }
+            return { error: null };
+
+        } catch (err) {
+            return { error: err };
+        }
     };
 
-    // QUOTES STATE
-    const [quotes, setQuotes] = useState(() => {
-        // Initial check on load
-        return checkCampaignStatus([
-            {
-                id: 'q1',
-                client: INITIAL_CLIENTS[0],
-                assets: [INITIAL_ASSETS[0]],
-                campaignName: 'Campanha Verão 2024',
-                startDate: '2024-01-01',
-                endDate: '2024-01-07',
-                days: 7,
-                discount: 0,
-                total: 10500,
-                status: 'aprovado', // Will be corrected to 'finalizado' by checkCampaignStatus since dates are past
-                controlNumber: '20241217-0001',
-                createdAt: new Date()
-            }
-        ]);
-    });
-
-    // Run check daily or on mount (for now just on mount/reload is enough for MVP)
-    useEffect(() => {
-        setQuotes(prev => checkCampaignStatus(prev));
-    }, []);
-
-    const addQuote = (quote) => {
-        // Generate Control Number: YYYYMMDD-0001
+    // --- QUOTES ACTIONS ---
+    // --- QUOTES ACTIONS ---
+    const addQuote = async (quote) => {
+        // Generate Custom Control Number: YYYYMMXXXX
         const today = new Date();
         const year = today.getFullYear();
-        const month = String(today.getMonth() + 1).padStart(2, '0');
-        const day = String(today.getDate()).padStart(2, '0');
-        const datePrefix = `${year}${month}${day}`;
+        const month = (today.getMonth() + 1).toString().padStart(2, '0');
+        const prefix = parseInt(`${year}${month}`);
 
-        const countToday = quotes.filter(q => q.controlNumber && q.controlNumber.startsWith(datePrefix)).length;
-        const sequence = String(countToday + 1).padStart(4, '0');
-        const controlNumber = `${datePrefix}-${sequence}`;
+        // Find max control number for this month
+        // We can't use .like() easily on numbers, so we range query or fetch all for this month.
+        // Or simpler: fetch order by control_number desc limit 1 where control_number >= prefix*10000
 
-        setQuotes(prev => [{ ...quote, id: `q${Date.now()}`, controlNumber }, ...prev]);
-    };
+        const minVal = prefix * 10000;
+        const maxVal = (prefix + 1) * 10000;
 
-    const updateQuote = (updatedQuote) => {
-        setQuotes(prev => prev.map(q => q.id === updatedQuote.id ? updatedQuote : q));
-    };
+        const { data: lastQuote } = await supabase
+            .from('quotes')
+            .select('control_number')
+            .gte('control_number', minVal)
+            .lt('control_number', maxVal)
+            .order('control_number', { ascending: false })
+            .limit(1)
+            .single();
 
-    const deleteQuote = (id) => {
-        setQuotes(prev => prev.filter(q => q.id !== id));
-    };
-
-    // Mock Initial Maintenances
-    const INITIAL_MAINTENANCES = [
-        {
-            id: 'm1',
-            assetId: '1', // Linked to 'Painel Centro'
-            title: 'Troca de Fonte de Alimentação',
-            description: 'Fonte queimada após pico de energia. Necessária troca urgente.',
-            type: 'corretiva', // corretiva, preventiva
-            priority: 'alta', // baixa, media, alta, urgente
-            status: 'resolvido', // aberto, em_andamento, resolvido
-            cost: 450.00,
-            responsible: 'TecElétrica Ltda',
-            date: '2024-02-15'
-        },
-        {
-            id: 'm2',
-            assetId: '2', // Linked to 'Painel Shopping'
-            title: 'Limpeza Preventiva e Revisão',
-            description: 'Limpeza dos módulos de LED e verificação de conexões.',
-            type: 'preventiva',
-            priority: 'media',
-            status: 'aberto',
-            cost: 200.00,
-            responsible: 'Equipe Interna',
-            date: '2024-03-20'
+        let nextControl = minVal + 1;
+        if (lastQuote && lastQuote.control_number) {
+            nextControl = parseInt(lastQuote.control_number) + 1;
         }
-    ];
 
-    const [maintenances, setMaintenances] = useState(INITIAL_MAINTENANCES);
+        const quoteWithId = { ...quote, control_number: nextControl };
 
-    // Maintenance Actions
-    const addMaintenance = (maintenance) => {
-        const newMaintenance = { ...maintenance, id: Math.random().toString(36).substr(2, 9) };
-        setMaintenances(prev => [...prev, newMaintenance]);
+        const { data, error } = await supabase.from('quotes').insert([quoteWithId]).select();
+        if (!error && data) {
+            const processed = processQuotes(data)[0];
+            setQuotes(prev => [...prev, processed]);
+        }
     };
 
-    const updateMaintenance = (updatedMaintenance) => {
-        setMaintenances(prev => prev.map(m => m.id === updatedMaintenance.id ? updatedMaintenance : m));
+    const updateQuote = async (updatedQuote) => {
+        const { data, error } = await supabase.from('quotes').update(updatedQuote).eq('id', updatedQuote.id).select();
+        if (!error && data) {
+            const processed = processQuotes(data)[0];
+            setQuotes(prev => prev.map(q => q.id === updatedQuote.id ? processed : q));
+        }
     };
 
-    const deleteMaintenance = (id) => {
-        setMaintenances(prev => prev.filter(m => m.id !== id));
+    const deleteQuote = async (id) => {
+        const { error } = await supabase.from('quotes').delete().eq('id', id);
+        if (!error) setQuotes(prev => prev.filter(q => q.id !== id));
     };
 
-    // INVENTORY STATE
-    const [inventory, setInventory] = useState(INITIAL_INVENTORY);
-
-    const addInventoryItem = (item) => {
-        setInventory(prev => [...prev, { ...item, id: `inv${Date.now()}` }]);
+    // --- MAINTENANCE ACTIONS ---
+    const addMaintenance = async (maintenance) => {
+        const result = await supabase.from('maintenances').insert([maintenance]).select();
+        const { data, error } = result;
+        if (!error && data) setMaintenances(prev => [...prev, data[0]]);
+        return result;
     };
 
-    const updateInventoryItem = (updatedItem) => {
-        setInventory(prev => prev.map(i => i.id === updatedItem.id ? updatedItem : i));
+    const updateMaintenance = async (updatedMaintenance) => {
+        const result = await supabase.from('maintenances').update(updatedMaintenance).eq('id', updatedMaintenance.id);
+        const { error } = result;
+        if (!error) setMaintenances(prev => prev.map(m => m.id === updatedMaintenance.id ? updatedMaintenance : m));
+        return result;
     };
 
-    const deleteInventoryItem = (id) => {
-        setInventory(prev => prev.filter(i => i.id !== id));
+    const deleteMaintenance = async (id) => {
+        const { error } = await supabase.from('maintenances').delete().eq('id', id);
+        if (!error) setMaintenances(prev => prev.filter(m => m.id !== id));
     };
 
-    // FINANCE STATE
-    const [transactions, setTransactions] = useState(INITIAL_TRANSACTIONS);
-
-    const addTransaction = (transaction) => {
-        setTransactions(prev => [...prev, { ...transaction, id: `t${Date.now()}` }]);
+    // --- INVENTORY ACTIONS ---
+    const addInventoryItem = async (item) => {
+        const { data, error } = await supabase.from('inventory').insert([item]).select();
+        if (!error && data) setInventory(prev => [...prev, data[0]]);
     };
 
-    const updateTransaction = (updated) => {
-        setTransactions(prev => prev.map(t => t.id === updated.id ? updated : t));
+    const updateInventoryItem = async (updatedItem) => {
+        const { error } = await supabase.from('inventory').update(updatedItem).eq('id', updatedItem.id);
+        if (!error) setInventory(prev => prev.map(i => i.id === updatedItem.id ? updatedItem : i));
     };
 
-    const deleteTransaction = (id) => {
-        setTransactions(prev => prev.filter(t => t.id !== id));
+    const deleteInventoryItem = async (id) => {
+        const { error } = await supabase.from('inventory').delete().eq('id', id);
+        if (!error) setInventory(prev => prev.filter(i => i.id !== id));
+    };
+
+    // --- TRANSACTIONS ACTIONS ---
+    const addTransaction = async (transaction) => {
+        const { data, error } = await supabase.from('transactions').insert([transaction]).select();
+        if (!error && data) setTransactions(prev => [...prev, data[0]]);
+    };
+
+    const updateTransaction = async (updated) => {
+        const { error } = await supabase.from('transactions').update(updated).eq('id', updated.id);
+        if (!error) setTransactions(prev => prev.map(t => t.id === updated.id ? updated : t));
+    };
+
+    const deleteTransaction = async (id) => {
+        const { error } = await supabase.from('transactions').delete().eq('id', id);
+        if (!error) setTransactions(prev => prev.filter(t => t.id !== id));
     };
 
     return (
         <DataContext.Provider value={{
+            loading,
             clients, addClient, updateClient, deleteClient, importClients,
             assets, addAsset, updateAsset, deleteAsset, importAssets,
             quotes, addQuote, updateQuote, deleteQuote,

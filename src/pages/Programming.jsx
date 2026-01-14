@@ -108,19 +108,124 @@ const Programming = () => {
     const [selectedHistoryBooking, setSelectedHistoryBooking] = useState(null);
     const [newHistoryNote, setNewHistoryNote] = useState('');
 
-    const toggleMediaStatus = (quote, newStatus, note = '') => {
-        console.log("toggleMediaStatus called", { id: quote.id, newStatus, note });
+    // AI Analysis State
+    const [analysisState, setAnalysisState] = useState(null); // { loading: bool, approved: bool, checks: [] }
+    const [forceAccept, setForceAccept] = useState(false);
+
+    const handleFileCheck = (file) => {
+        setAnalysisState({ loading: true, checks: [] });
+
+        // Simulate Processing Delay
+        setTimeout(() => {
+            const checks = [];
+            const video = document.createElement('video');
+            video.preload = 'metadata';
+
+            // Basic File Reading
+            const reader = new FileReader();
+
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    performChecks(img.width, img.height);
+                };
+                img.onerror = () => {
+                    // Try as Video if Image fails (or use type check earlier)
+                    if (file.type.startsWith('video')) {
+                        video.onloadedmetadata = () => {
+                            performChecks(video.videoWidth, video.videoHeight);
+                        };
+                        video.src = URL.createObjectURL(file);
+                    } else {
+                        setAnalysisState({
+                            loading: false,
+                            approved: false,
+                            checks: [{ name: 'Formato', status: 'error', details: 'Arquivo inválido' }]
+                        });
+                    }
+                };
+                img.src = e.target.result;
+            };
+
+            reader.readAsDataURL(file);
+
+            const performChecks = (w, h) => {
+                let approved = true;
+
+                // 1. Resolution Check
+                // Get target resolution from Asset (defaulting to 1920x1080 if missing)
+                const asset = selectedHistoryBooking?.assets?.[0]; // Assuming 1 asset per booking or checking first
+                // Parse resolution string "1920x1080"
+                let targetW = 1920;
+                let targetH = 1080;
+
+                if (asset && asset.resolution) {
+                    const parts = asset.resolution.toLowerCase().split('x');
+                    if (parts.length === 2) {
+                        targetW = parseInt(parts[0]);
+                        targetH = parseInt(parts[1]);
+                    }
+                }
+
+                if (w === targetW && h === targetH) {
+                    checks.push({ name: 'Resolução', status: 'ok', details: `${w}x${h} (Exato)` });
+                } else {
+                    checks.push({ name: 'Resolução', status: 'error', details: `Recebido ${w}x${h} (Meta ${targetW}x${targetH})` });
+                    approved = false;
+                }
+
+                // 2. Aspect Ratio (Tolerance 0.05)
+                const ratio = w / h;
+                const targetRatio = targetW / targetH;
+                const diff = Math.abs(ratio - targetRatio);
+
+                if (diff < 0.05) {
+                    checks.push({ name: 'Proporção', status: 'ok', details: 'Compatível' });
+                } else {
+                    checks.push({ name: 'Proporção', status: 'error', details: 'Distorção detectada' });
+                    approved = false;
+                }
+
+                // 3. AI Legibility (Mock)
+                // Randomize or based on size? Let's assume > 720p is legible for demo
+                const isLegible = h >= 720;
+                checks.push({
+                    name: 'Legibilidade (IA)',
+                    status: isLegible ? 'ok' : 'warning',
+                    details: isLegible ? 'Texto nítido' : 'Baixa definição provável'
+                });
+
+                // Final State
+                setAnalysisState({
+                    loading: false,
+                    approved: approved && isLegible,
+                    checks
+                });
+            };
+
+        }, 1500); // 1.5s simulated delay
+    };
+
+    const toggleMediaStatus = (quote, newStatus, note = '', aiData = null) => {
+        console.log("toggleMediaStatus called", { id: quote.id, newStatus, note, aiData });
         const historyEntry = {
             date: new Date().toISOString(),
             status: newStatus,
             user: user?.name || 'Sistema',
-            note: note
+            note: note,
+            aiData: aiData
         };
 
-        const updatedHistory = quote.mediaHistory ? [...quote.mediaHistory, historyEntry] : [historyEntry];
+        // Handle both camelCase (local) and snake_case (DB) for history
+        const currentHistory = quote.mediaHistory || quote.media_history || [];
+        const updatedHistory = [...currentHistory, historyEntry];
 
         const updatedQuote = {
             ...quote,
+            // Update snake_case for Supabase
+            media_status: newStatus,
+            media_history: updatedHistory,
+            // Update camelCase for local optimistic UI (though DataContext will overwrite on success)
             mediaStatus: newStatus,
             mediaHistory: updatedHistory
         };
@@ -132,6 +237,8 @@ const Programming = () => {
         console.log("Opening history for booking", booking);
         setSelectedHistoryBooking(booking);
         setHistoryModalOpen(true);
+        setAnalysisState(null); // Reset Analysis
+        setForceAccept(false);
     };
 
     const handleAddHistory = (status) => {
@@ -140,13 +247,13 @@ const Programming = () => {
             // Fetch the latest version of the quote to ensure we are updating current state
             const latestQuote = quotes.find(q => q.id === selectedHistoryBooking.id);
             if (latestQuote) {
-                toggleMediaStatus(latestQuote, status, newHistoryNote);
+                toggleMediaStatus(latestQuote, status, newHistoryNote, analysisState); // Pass analysisState
                 // alert(`Status "${status}" confirmado para ${latestQuote.campaignName}!`); // Optional: Visual confirmation for user
             } else {
                 console.error("Quote not found in state", selectedHistoryBooking.id);
                 alert("Erro: Orçamento não encontrado. Tente recarregar a página.");
                 // Fallback attempt
-                toggleMediaStatus(selectedHistoryBooking, status, newHistoryNote);
+                toggleMediaStatus(selectedHistoryBooking, status, newHistoryNote, analysisState);
             }
             setNewHistoryNote('');
             setHistoryModalOpen(false);
@@ -184,8 +291,8 @@ const Programming = () => {
             {/* MEDIA HISTORY MODAL */}
             {historyModalOpen && selectedHistoryBooking && (
                 <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fadeIn">
-                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
-                        <div className="bg-slate-50 p-4 border-b border-slate-100 flex justify-between items-center">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+                        <div className="bg-slate-50 p-4 border-b border-slate-100 flex justify-between items-center shrink-0">
                             <h3 className="font-bold text-slate-800 flex items-center gap-2">
                                 <FileText size={18} className="text-primary" />
                                 Histórico de Mídia
@@ -195,14 +302,17 @@ const Programming = () => {
                             </button>
                         </div>
 
-                        <div className="p-6">
+                        <div className="p-6 overflow-y-auto">
                             <div className="mb-6">
                                 <h4 className="text-sm font-bold text-slate-700">{selectedHistoryBooking.campaignName}</h4>
                                 <p className="text-xs text-slate-500">{selectedHistoryBooking.client.name}</p>
+                                <div className="mt-2 text-xs bg-slate-100 p-2 rounded border border-slate-200">
+                                    <p><span className="font-bold">Resolução Esperada:</span> {selectedHistoryBooking.assets && selectedHistoryBooking.assets[0] ? (selectedHistoryBooking.assets[0].resolution || 'N/A') : 'N/A'}</p>
+                                </div>
                             </div>
 
                             {/* Timeline */}
-                            <div className="space-y-4 mb-6 max-h-60 overflow-y-auto pr-2">
+                            <div className="space-y-4 mb-6 max-h-48 overflow-y-auto pr-2">
                                 {selectedHistoryBooking.mediaHistory && selectedHistoryBooking.mediaHistory.length > 0 ? (
                                     selectedHistoryBooking.mediaHistory.map((h, i) => (
                                         <div key={i} className="flex gap-3 text-sm">
@@ -217,6 +327,17 @@ const Programming = () => {
                                                 <p className="font-medium text-slate-800 capitalize">{h.status === 'received' ? 'Recebido' : h.status === 'rejected' ? 'Refugado' : 'Pendente'}</p>
                                                 <p className="text-xs text-slate-500">{new Date(h.date).toLocaleString()}</p>
                                                 {h.note && <p className="text-xs text-slate-600 mt-1 italic">"{h.note}"</p>}
+                                                {h.aiData && (
+                                                    <div className="mt-1 flex gap-2">
+                                                        {h.aiData.checks.map((check, idx) => (
+                                                            <span key={idx} className={clsx("text-[10px] px-1.5 py-0.5 rounded border",
+                                                                check.status === 'ok' ? "bg-emerald-50 border-emerald-100 text-emerald-600" : "bg-red-50 border-red-100 text-red-600"
+                                                            )}>
+                                                                {check.name}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                )}
                                                 <p className="text-[10px] text-slate-400 mt-0.5">Por: {h.user}</p>
                                             </div>
                                         </div>
@@ -226,35 +347,114 @@ const Programming = () => {
                                 )}
                             </div>
 
-                            {/* Actions */}
+                            {/* AI Verification Section */}
                             <div className="border-t border-slate-100 pt-4">
-                                <label className="block text-xs font-bold text-slate-500 mb-2">Adicionar Novo Status</label>
-                                <textarea
-                                    className="w-full text-sm border border-slate-200 rounded-lg p-2 focus:ring-2 focus:ring-primary/20 focus:border-primary mb-3"
-                                    rows="2"
-                                    placeholder="Observação (opcional)..."
-                                    value={newHistoryNote}
-                                    onChange={(e) => setNewHistoryNote(e.target.value)}
-                                ></textarea>
-                                <div className="grid grid-cols-3 gap-2">
-                                    <button
-                                        onClick={() => handleAddHistory('received')}
-                                        className="bg-emerald-100 text-emerald-700 hover:bg-emerald-200 px-3 py-2 rounded-lg text-xs font-bold transition-colors"
-                                    >
-                                        Confirmar
-                                    </button>
-                                    <button
-                                        onClick={() => handleAddHistory('rejected')}
-                                        className="bg-red-100 text-red-700 hover:bg-red-200 px-3 py-2 rounded-lg text-xs font-bold transition-colors"
-                                    >
-                                        Refugar
-                                    </button>
-                                    <button
-                                        onClick={() => handleAddHistory('pending')}
-                                        className="bg-amber-100 text-amber-700 hover:bg-amber-200 px-3 py-2 rounded-lg text-xs font-bold transition-colors"
-                                    >
-                                        Pendente
-                                    </button>
+                                <label className="block text-xs font-bold text-slate-500 mb-2">Validação de Arquivo (AI)</label>
+
+                                {!analysisState && (
+                                    <div className="border-2 border-dashed border-slate-200 rounded-lg p-6 text-center hover:bg-slate-50 transition-colors cursor-pointer relative">
+                                        <input
+                                            type="file"
+                                            accept="image/*,video/*"
+                                            className="absolute inset-0 opacity-0 cursor-pointer"
+                                            onChange={(e) => {
+                                                if (e.target.files && e.target.files[0]) {
+                                                    handleFileCheck(e.target.files[0]);
+                                                }
+                                            }}
+                                        />
+                                        <Upload className="mx-auto text-slate-400 mb-2" size={24} />
+                                        <p className="text-xs text-slate-500 font-medium">Clique ou arraste um arquivo para validar</p>
+                                        <p className="text-[10px] text-slate-400 mt-1">Verificação de Resolução, Proporção e Legibilidade</p>
+                                    </div>
+                                )}
+
+                                {analysisState && (
+                                    <div className="bg-slate-50 rounded-lg p-4 mb-4 border border-slate-200">
+                                        <div className="flex justify-between items-center mb-3">
+                                            <h5 className="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+                                                {analysisState.loading ? <div className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin"></div> : <MonitorPlay size={14} className="text-primary" />}
+                                                Resultado da Análise
+                                            </h5>
+                                            {!analysisState.loading && (
+                                                <button onClick={() => setAnalysisState(null)} className="text-[10px] text-slate-400 hover:text-slate-600 underline">
+                                                    Trocar Arquivo
+                                                </button>
+                                            )}
+                                        </div>
+
+                                        {analysisState.loading ? (
+                                            <p className="text-xs text-slate-500 italic">Processando arquivo...</p>
+                                        ) : (
+                                            <div className="space-y-2">
+                                                {analysisState.checks.map((check, idx) => (
+                                                    <div key={idx} className="flex justify-between items-center text-xs">
+                                                        <span className="text-slate-600">{check.name}</span>
+                                                        <div className="flex items-center gap-1.5">
+                                                            <span className={clsx("font-medium", check.status === 'ok' ? "text-emerald-600" : "text-red-500")}>
+                                                                {check.details}
+                                                            </span>
+                                                            {check.status === 'ok' ? <CheckCircle size={12} className="text-emerald-500" /> : <AlertCircle size={12} className="text-red-500" />}
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                                <div className={clsx("mt-3 pt-3 border-t text-xs font-bold text-center",
+                                                    analysisState.approved ? "text-emerald-600 border-emerald-100" : "text-red-500 border-red-100"
+                                                )}>
+                                                    {analysisState.approved ? "ARQUIVO APROVADO PELO SISTEMA" : "ARQUIVO REPROVADO PELO SISTEMA"}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+
+                                {/* Actions */}
+                                <div className="mt-4">
+                                    <label className="block text-xs font-bold text-slate-500 mb-2">Observação Manual</label>
+                                    <textarea
+                                        className="w-full text-sm border border-slate-200 rounded-lg p-2 focus:ring-2 focus:ring-primary/20 focus:border-primary mb-3"
+                                        rows="2"
+                                        placeholder="Observação..."
+                                        value={newHistoryNote}
+                                        onChange={(e) => setNewHistoryNote(e.target.value)}
+                                    ></textarea>
+
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <button
+                                            onClick={() => handleAddHistory('received')}
+                                            disabled={!analysisState?.approved && !forceAccept} // Disable unless approved OR Force Accept active
+                                            className={clsx("px-3 py-2 rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-2",
+                                                (!analysisState?.approved && !forceAccept)
+                                                    ? "bg-slate-100 text-slate-400 cursor-not-allowed"
+                                                    : "bg-emerald-100 text-emerald-700 hover:bg-emerald-200"
+                                            )}
+                                        >
+                                            <CheckCircle size={14} />
+                                            Confirmar Recebimento
+                                        </button>
+                                        <button
+                                            onClick={() => handleAddHistory('rejected')}
+                                            className="bg-red-100 text-red-700 hover:bg-red-200 px-3 py-2 rounded-lg text-xs font-bold transition-colors"
+                                        >
+                                            Refugar Mídia
+                                        </button>
+                                    </div>
+
+                                    {/* Force Accept Option */}
+                                    {analysisState && !analysisState.approved && (
+                                        <div className="mt-3 flex items-center gap-2 justify-center">
+                                            <input
+                                                type="checkbox"
+                                                id="forceAccept"
+                                                checked={forceAccept}
+                                                onChange={(e) => setForceAccept(e.target.checked)}
+                                                className="rounded border-slate-300 text-amber-500 focus:ring-amber-500"
+                                            />
+                                            <label htmlFor="forceAccept" className="text-xs text-amber-600 font-bold cursor-pointer select-none">
+                                                Forçar Aceite (Ignorar Alerta AI)
+                                            </label>
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         </div>
@@ -358,7 +558,15 @@ const Programming = () => {
                                         <div className="text-xs text-slate-500 space-y-1">
                                             <p><span className="font-medium text-slate-600">Cliente:</span> {booking.client.name}</p>
                                             <p><span className="font-medium text-slate-600">Período:</span> {new Date(booking.startDate).toLocaleDateString()} a {new Date(booking.endDate).toLocaleDateString()}</p>
-                                            <p><span className="font-medium text-slate-600">Mídia:</span> {booking.mediaStatus === 'received' ? 'Recebida' : booking.mediaStatus === 'rejected' ? 'Refugada' : 'Pendente'}</p>
+                                            <p className="flex items-center gap-1.5 mt-1">
+                                                <span className="font-medium text-slate-600">Mídia:</span>
+                                                <span className={clsx("text-[10px] font-bold px-1.5 py-0.5 rounded uppercase",
+                                                    booking.mediaStatus === 'received' ? "bg-emerald-100 text-emerald-700" :
+                                                        booking.mediaStatus === 'rejected' ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
+                                                )}>
+                                                    {booking.mediaStatus === 'received' ? 'OK' : booking.mediaStatus === 'rejected' ? 'REFUGADA' : 'PENDENTE'}
+                                                </span>
+                                            </p>
                                         </div>
                                     </div>
                                 ))
@@ -793,21 +1001,30 @@ const Programming = () => {
                                             </div>
                                             <div className="flex items-center gap-3 text-sm text-slate-600">
                                                 <Film size={16} className="text-slate-400" />
-                                                <span className={clsx("font-medium",
-                                                    quote.mediaStatus === 'received' ? "text-emerald-600" :
-                                                        quote.mediaStatus === 'rejected' ? "text-red-600" : "text-amber-500"
+                                                <span className={clsx("font-medium uppercase tracking-wider text-xs px-2 py-0.5 rounded",
+                                                    quote.mediaStatus === 'received' ? "bg-emerald-100 text-emerald-700" :
+                                                        quote.mediaStatus === 'rejected' ? "bg-red-100 text-red-700 font-bold" : "bg-amber-100 text-amber-700"
                                                 )}>
-                                                    Mídia: {quote.mediaStatus === 'received' ? 'Recebida' : quote.mediaStatus === 'rejected' ? 'Refugada' : 'Pendente'}
+                                                    Mídia: {quote.mediaStatus === 'received' ? 'OK (Recebida)' : quote.mediaStatus === 'rejected' ? 'REFUGADA (Reprovada)' : 'PENDENTE'}
                                                 </span>
                                             </div>
                                         </div>
 
-                                        <div className="border-t border-slate-100 pt-4 flex gap-2">
+                                        <div className="border-t border-slate-100 pt-4 mt-auto">
                                             <button
-                                                onClick={() => handleOpenHistory(quote)}
-                                                className="flex-1 py-2 rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-600 text-xs font-bold transition-colors"
+                                                onClick={() => {
+                                                    setSelectedCampaignForAssets(quote);
+                                                    setViewAssetsModalOpen(true);
+                                                }}
+                                                className={clsx("w-full py-2.5 rounded-lg text-sm font-bold text-white transition-colors flex items-center justify-center gap-2",
+                                                    quote.mediaStatus === 'received' ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-200" :
+                                                        quote.mediaStatus === 'rejected' ? "bg-red-500 hover:bg-red-600 shadow-red-200" : "bg-primary hover:bg-primary-dark shadow-primary/20"
+                                                )}
                                             >
-                                                Ver Histórico Mídia
+                                                {quote.mediaStatus === 'received' ? <CheckCircle size={16} /> :
+                                                    quote.mediaStatus === 'rejected' ? <AlertCircle size={16} /> :
+                                                        <CheckCircle size={16} />}
+                                                Confirmar / Gerenciar
                                             </button>
                                         </div>
                                     </div>

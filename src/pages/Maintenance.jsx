@@ -3,6 +3,7 @@ import { useData } from '../context/DataContext';
 import { generateMaintenanceReport } from '../utils/pdfGenerator';
 import { Wrench, Plus, Search, Filter, AlertTriangle, CheckCircle, Clock, MapPin, DollarSign, Calendar, Printer, Pencil } from 'lucide-react';
 import clsx from 'clsx';
+// import { seedDatabase } from '../utils/seed';
 
 const Maintenance = () => {
     const { maintenances = [], assets = [], addMaintenance, updateMaintenance, deleteMaintenance } = useData();
@@ -67,7 +68,7 @@ const Maintenance = () => {
     const handleEdit = (item) => {
         setEditingItem(item);
         setFormData({
-            assetId: item.assetId,
+            assetId: item.asset_id || item.assetId, // Handle snake_case from DB
             title: item.title,
             description: item.description,
             type: item.type,
@@ -80,7 +81,7 @@ const Maintenance = () => {
         setActiveTab('form');
     };
 
-    const handleSave = (e) => {
+    const handleSave = async (e) => {
         e.preventDefault();
 
         if (!formData.assetId || !formData.title || !formData.responsible) {
@@ -88,16 +89,29 @@ const Maintenance = () => {
             return;
         }
 
+        // Map assetId (state) to asset_id (DB)
         const payload = {
             ...formData,
+            asset_id: formData.assetId,
             cost: parseFloat(formData.cost) || 0
         };
+        delete payload.assetId; // Remove camelCase key to avoid "column does not exist" error
 
+        let error = null;
         if (editingItem) {
-            updateMaintenance({ ...payload, id: editingItem.id });
+            const res = await updateMaintenance({ ...payload, id: editingItem.id });
+            error = res.error;
         } else {
-            addMaintenance(payload);
+            const res = await addMaintenance(payload);
+            error = res.error;
         }
+
+        if (error) {
+            console.error("Erro ao salvar manutenção:", error);
+            alert("Erro ao salvar: " + error.message);
+            return;
+        }
+
         setActiveTab('list');
     };
 
@@ -131,15 +145,18 @@ const Maintenance = () => {
                     </h1>
                     <p className="text-slate-500 mt-1">Gerenciamento de serviços e reparos dos ativos.</p>
                 </div>
-                {activeTab === 'list' && (
-                    <button
-                        onClick={handleNew}
-                        className="bg-primary hover:bg-primary-dark text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-colors shadow-sm"
-                    >
-                        <Plus size={20} />
-                        <span>Nova Manutenção</span>
-                    </button>
-                )}
+                <div className="flex gap-2">
+                    {/* Migration button removed */}
+                    {activeTab === 'list' && (
+                        <button
+                            onClick={handleNew}
+                            className="bg-primary hover:bg-primary-dark text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-colors shadow-sm"
+                        >
+                            <Plus size={20} />
+                            <span>Nova Manutenção</span>
+                        </button>
+                    )}
+                </div>
             </div>
 
             {activeTab === 'list' ? (
@@ -195,7 +212,7 @@ const Maintenance = () => {
                         </div>
 
                         <button
-                            onClick={() => generateMaintenanceReport(filteredMaintenances)}
+                            onClick={() => generateMaintenanceReport(filteredMaintenances, assets)}
                             className="flex items-center gap-2 px-3 py-2 border border-slate-200 hover:bg-slate-50 rounded-lg text-slate-600 transition-colors"
                             title="Exportar Relatório PDF"
                         >
@@ -213,7 +230,7 @@ const Maintenance = () => {
                         ) : (
                             <div className="divide-y divide-slate-100">
                                 {filteredMaintenances.map((item) => {
-                                    const asset = getAssetDetails(item.assetId);
+                                    const asset = getAssetDetails(item.asset_id || item.assetId);
                                     return (
                                         <div key={item.id} className="p-6 hover:bg-slate-50 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-4 group cursor-pointer" onClick={() => handleEdit(item)}>
                                             <div className="flex-1">
@@ -441,9 +458,8 @@ const Maintenance = () => {
                         )}
                     </div>
                 </form>
-            )
-            }
-        </div >
+            )}
+        </div>
     );
 };
 

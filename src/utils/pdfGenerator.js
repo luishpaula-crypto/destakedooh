@@ -218,7 +218,8 @@ export const generateQuotePDF = async (quote) => {
         }
     });
 
-    doc.save(`Proposta_${quote.id}.pdf`);
+    const filename = quote.controlNumber ? `PROP-${quote.controlNumber}.pdf` : `Proposta_${quote.id}.pdf`;
+    doc.save(filename);
 };
 
 // --- PI GENERATOR (Detailed Layout) ---
@@ -461,7 +462,7 @@ export const generatePIPDF = async (quote) => {
     doc.save(`PI_${quote.controlNumber || 'Draft'}.pdf`);
 };
 
-export const generateMaintenanceReport = (maintenances) => {
+export const generateMaintenanceReport = (maintenances, assets = []) => {
     const doc = new jsPDF({ orientation: 'landscape' });
     const themeColor = [9, 55, 88];
 
@@ -479,19 +480,25 @@ export const generateMaintenanceReport = (maintenances) => {
     doc.line(14, 32, 283, 32);
 
     // Table
-    const tableData = maintenances.map(m => [
-        new Date(m.date).toLocaleDateString(),
-        m.title,
-        m.type,
-        m.priority,
-        (m.status || '').replace('_', ' '),
-        m.responsible,
-        `R$ ${parseFloat(m.cost || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`
-    ]);
+    const tableData = maintenances.map(m => {
+        const asset = assets.find(a => a.id === (m.asset_id || m.assetId)) || {};
+        const assetName = asset.name || 'Ativo Desconhecido';
+
+        return [
+            new Date(m.date).toLocaleDateString(),
+            assetName,
+            m.title,
+            m.type,
+            m.priority,
+            (m.status || '').replace('_', ' '),
+            m.responsible,
+            `R$ ${parseFloat(m.cost || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`
+        ];
+    });
 
     doc.autoTable({
         startY: 40,
-        head: [['Data', 'Título', 'Tipo', 'Prioridade', 'Status', 'Responsável', 'Custo']],
+        head: [['Data', 'Ativo', 'Título', 'Tipo', 'Prioridade', 'Status', 'Responsável', 'Custo']],
         body: tableData,
         theme: 'striped',
         headStyles: { fillColor: themeColor },

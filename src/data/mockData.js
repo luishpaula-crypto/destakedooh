@@ -18,7 +18,15 @@ export const CLIENTS = [
         bairro: 'Bela Vista',
         city: 'São Paulo',
         state: 'SP',
-        zip: '01310-100'
+        zip: '01310-100',
+        type: 'Advertiser',
+        vertical: 'Beverages',
+        health_score: 95,
+        kyc_status: 'Approved',
+        credit_limit: 100000.00,
+        payment_terms: '30 days',
+        commission_rate: 0,
+        parent_id: null
     },
     {
         id: 'c2',
@@ -33,7 +41,15 @@ export const CLIENTS = [
         bairro: 'Jardim das Acácias',
         city: 'São Paulo',
         state: 'SP',
-        zip: '04707-900'
+        zip: '04707-900',
+        type: 'Advertiser',
+        vertical: 'Retail',
+        health_score: 88,
+        kyc_status: 'Approved',
+        credit_limit: 50000.00,
+        payment_terms: '45 days',
+        commission_rate: 0,
+        parent_id: null
     },
     {
         id: 'c3',
@@ -48,7 +64,15 @@ export const CLIENTS = [
         bairro: 'Centro',
         city: 'Rio de Janeiro',
         state: 'RJ',
-        zip: '20040-030'
+        zip: '20040-030',
+        type: 'Agency',
+        vertical: 'Events',
+        health_score: 70,
+        kyc_status: 'Pending',
+        credit_limit: 15000.00,
+        payment_terms: '15 days',
+        commission_rate: 10,
+        parent_id: null
     }
 ];
 

@@ -3,13 +3,13 @@ import { useNavigate } from 'react-router-dom';
 import { useData } from '../context/DataContext';
 import { useAuth } from '../context/AuthContext';
 import { generateQuotePDF, generatePIPDF } from '../utils/pdfGenerator';
-import { FileText, Plus, Check, X, Printer, DollarSign, Edit, Play, Lock, MapPin, Camera, Search } from 'lucide-react';
+import { FileText, Plus, Check, X, Printer, DollarSign, Edit, Play, Lock, MapPin, Camera, Search, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 
 const Quotes = () => {
     const navigate = useNavigate();
     const { user } = useAuth();
-    const { clients: CLIENTS = [], assets: ASSETS = [], quotes = [], addQuote, updateQuote, transactions = [], addTransaction } = useData();
+    const { clients: CLIENTS = [], assets: ASSETS = [], quotes = [], addQuote, updateQuote, deleteQuote, transactions = [], addTransaction } = useData();
     const [activeTab, setActiveTab] = useState('list'); // 'list' or 'form'
 
     // Form State
@@ -23,63 +23,58 @@ const Quotes = () => {
         observations: ''
     });
 
-    const updateStatus = async (id, newStatus) => {
+    const updateStatus = (id, newStatus) => {
         const quote = quotes.find(q => q.id === id);
         if (quote) {
-            const updatedQuote = { ...quote, status: newStatus };
+            // Prepare Base Payload
+            const payload = {
+                id: quote.id,
+                status: newStatus
+            };
 
-            // Initialize mediaStatus if approving
-            if (newStatus === 'aprovado' && !quote.mediaStatus) {
-                updatedQuote.mediaStatus = 'pending';
-            }
-
-            updateQuote(updatedQuote);
-
-            // Automation: Finance Entry on Approval + PI Stamp
+            // Specific Logic for 'aprovado'
             if (newStatus === 'aprovado') {
-                const alreadyExists = transactions.some(t => t.quoteId === quote.id);
+                if (!quote.mediaStatus) payload.media_status = 'pending';
+                if (!quote.piGeneratedAt) payload.pi_generated_at = new Date().toISOString();
+
+                // Automation: Create Finance Transaction
+                const alreadyExists = transactions.some(t => t.quote_id === quote.id);
                 if (!alreadyExists) {
                     addTransaction({
                         description: `Recebimento - ${quote.campaignName} (Ref. ${quote.controlNumber || 'S/N'})`,
                         type: 'income',
                         category: 'Vendas',
                         amount: quote.total,
-                        dueDate: new Date().toISOString().split('T')[0], // Default to Today
+                        due_date: new Date().toISOString().split('T')[0],
                         status: 'pending',
-                        clientId: quote.client?.id,
-                        quoteId: quote.id,
-                        taxType: null
+                        client_id: quote.client?.id,
+                        quote_id: quote.id,
+                        tax_type: null
                     });
                 }
-
-                // --- PI GENERATION TIMESTAMP ---
-                // We add this to simulate the file being created at this moment.
-                updatedQuote.piGeneratedAt = new Date().toISOString();
-
-                // Optionally auto-download it once on the spot for verification?
-                // The user said "leave it stored". 
-                // We won't auto-download to avoid popups, but user can click to download.
             }
+
+            // Execute Update
+            updateQuote(payload);
 
             // Automation: If status changed to 'enviado', download PDF and open email
             if (newStatus === 'enviado') {
                 try {
                     // 1. Generate & Download PDF
-                    await generateQuotePDF(quote);
+                    generateQuotePDF(quote).then(() => {
+                        // 2. Open Email Client
+                        const clientEmail = (quote.client && quote.client.email) ? quote.client.email : ''; // Safe Access
+                        const subject = `Proposta Comercial ${quote.controlNumber ? `- ${quote.controlNumber}` : ''} - ${quote.campaignName || ''}`;
+                        const body = `Olá ${quote.client?.contact_name ? quote.client.contact_name.split(' ')[0] : 'Cliente'},\n\nSegue em anexo a proposta comercial referente à campanha "${quote.campaignName || ''}".\n\nFico à disposição para qualquer dúvida.\n\nAtenciosamente,\n\n${user?.name || 'Comercial'}`;
 
-                    // 2. Open Email Client
-                    const clientEmail = quote.client?.email || '';
-                    const subject = `Proposta Comercial ${quote.controlNumber ? `- ${quote.controlNumber}` : ''} - ${quote.campaignName || ''}`;
-                    const body = `Olá ${quote.client?.contact_name ? quote.client.contact_name.split(' ')[0] : 'Cliente'},\n\nSegue em anexo a proposta comercial referente à campanha "${quote.campaignName || ''}".\n\nFico à disposição para qualquer dúvida.\n\nAtenciosamente,\n\n${user?.name || 'Comercial'}`;
+                        const mailtoLink = `mailto:${clientEmail}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
 
-                    const mailtoLink = `mailto:${clientEmail}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-
-                    // Use timeout to ensure PDF download initiates first
-                    setTimeout(() => {
-                        window.location.href = mailtoLink;
-                        // Alert user to attach the file
-                        alert("📄 PDF Baixado!\n\nSeu cliente de e-mail foi aberto.\n⚠️ Importante: O navegador não consegue anexar arquivos automaticamente. Por favor, arraste o PDF baixado para o email antes de enviar.");
-                    }, 500);
+                        // Use timeout to ensure PDF download initiates first
+                        setTimeout(() => {
+                            window.location.href = mailtoLink;
+                            alert("📄 PDF Baixado!\n\nSeu cliente de e-mail foi aberto.\n⚠️ Importante: O navegador não consegue anexar arquivos automaticamente. Por favor, arraste o PDF baixado para o email antes de enviar.");
+                        }, 500);
+                    });
 
                 } catch (error) {
                     console.error("Erro na automação:", error);
@@ -97,7 +92,8 @@ const Quotes = () => {
         const matchesName = (quote.campaignName || '').toLowerCase().includes(term);
         const clientName = quote.client?.name || '';
         const matchesClient = clientName.toLowerCase().includes(term);
-        const matchesControl = (quote.controlNumber || '').toLowerCase().includes(term);
+        const controlString = String(quote.controlNumber || '');
+        const matchesControl = controlString.includes(term) || `prop-${controlString}`.includes(term);
         const matchesSearch = matchesName || matchesClient || matchesControl;
 
         // Status Filter
@@ -214,7 +210,7 @@ const Quotes = () => {
         const subtotal = assets.reduce((acc, curr) => {
             const price = parseFloat(curr.valor_tabela_unit || curr.daily_rate || 0);
             return acc + (price * days);
-        }, 0) * (parseInt(formData.quotas) || 1);
+        }, 0) * (parseFloat(formData.quotas) || 1);
 
         const discountPct = parseFloat(formData.discount) || 0;
         const discountAmount = subtotal * (discountPct / 100);
@@ -229,20 +225,20 @@ const Quotes = () => {
         }
 
         const quoteData = {
-            client,
-            campaignName: formData.campaignName || `Campanha ${client.name}`,
-            startDate: formData.startDate,
-            endDate: formData.endDate,
-            assets,
-            days,
-            quotas: parseInt(formData.quotas) || 1,
-            discountPct,
+            // DB Columns (snake_case)
+            client: client, // Stored as JSONB
+            campaign_name: formData.campaignName || `Campanha ${client.name}`,
+            start_date: formData.startDate,
+            end_date: formData.endDate,
+            assets: assets, // Stored as JSONB
+            days: days,
+            quotas: parseFloat(formData.quotas) || 1,
+            discount_pct: discountPct,
             discount: discountAmount,
             total,
             observations: finalObservations,
-            // Status Logic: New quotes start as 'rascunho'
             status: editingId ? quotes.find(q => q.id === editingId).status : 'rascunho',
-            createdAt: new Date()
+            created_at: new Date()
         };
 
         if (editingId) {
@@ -292,7 +288,7 @@ const Quotes = () => {
         .reduce((acc, curr) => {
             const price = parseFloat(curr.valor_tabela_unit || curr.daily_rate || 0);
             return acc + (price * currentDays);
-        }, 0) * (parseInt(formData.quotas) || 1);
+        }, 0) * (parseFloat(formData.quotas) || 1);
 
     const currentDiscountVal = currentSubtotal * ((parseFloat(formData.discount) || 0) / 100);
 
@@ -339,49 +335,62 @@ const Quotes = () => {
                         </div>
 
                         {/* Filters Row */}
-                        <div className="flex flex-wrap gap-4 items-end pb-2">
-                            <div className="flex-1 min-w-[200px]">
-                                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Status</label>
-                                <select
-                                    className="w-full p-2 border border-slate-200 rounded-lg text-sm bg-white"
-                                    value={filterStatus}
-                                    onChange={e => setFilterStatus(e.target.value)}
-                                >
-                                    <option value="">Todos</option>
-                                    <option value="rascunho">Rascunho</option>
-                                    <option value="enviado">Enviado</option>
-                                    <option value="aprovado">Aprovado</option>
-                                    <option value="ativo">Ativo (No Ar)</option>
-                                    <option value="finalizado">Finalizado</option>
-                                    <option value="perdido">Perdido</option>
-                                </select>
+                        <div className="flex flex-wrap gap-4 items-end justify-between pb-2">
+                            {/* Status Pills */}
+                            <div className="flex flex-wrap gap-2 w-full md:w-auto">
+                                {[
+                                    { id: '', label: 'Todos', color: 'bg-slate-100 text-slate-600' },
+                                    { id: 'rascunho', label: 'Rascunho', color: 'bg-slate-200 text-slate-700' },
+                                    { id: 'enviado', label: 'Enviado', color: 'bg-blue-100 text-blue-700' },
+                                    { id: 'aprovado', label: 'Aprovado', color: 'bg-indigo-100 text-indigo-700' },
+                                    { id: 'ativo', label: 'Ativo', color: 'bg-emerald-100 text-emerald-700' },
+                                    { id: 'finalizado', label: 'Finalizado', color: 'bg-gray-100 text-gray-600' },
+                                    { id: 'perdido', label: 'Perdido', color: 'bg-red-100 text-red-700' },
+                                ].map(status => (
+                                    <button
+                                        key={status.id}
+                                        onClick={() => setFilterStatus(status.id)}
+                                        className={clsx(
+                                            "px-3 py-1.5 rounded-full text-xs font-bold transition-all border",
+                                            filterStatus === status.id
+                                                ? `${status.color} border-transparent shadow-sm ring-2 ring-offset-1 ring-slate-200`
+                                                : "bg-white text-slate-500 border-slate-200 hover:bg-slate-50"
+                                        )}
+                                    >
+                                        {status.label}
+                                    </button>
+                                ))}
                             </div>
-                            <div className="flex-1 min-w-[200px]">
-                                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">De (Início)</label>
-                                <input
-                                    type="date"
-                                    className="w-full p-2 border border-slate-200 rounded-lg text-sm bg-white"
-                                    value={filterPeriod.start}
-                                    onChange={e => setFilterPeriod({ ...filterPeriod, start: e.target.value })}
-                                />
+
+                            {/* Date Filters */}
+                            <div className="flex gap-4 items-center">
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">De</label>
+                                    <input
+                                        type="date"
+                                        className="w-full p-2 border border-slate-200 rounded-lg text-sm bg-white"
+                                        value={filterPeriod.start}
+                                        onChange={e => setFilterPeriod({ ...filterPeriod, start: e.target.value })}
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Até</label>
+                                    <input
+                                        type="date"
+                                        className="w-full p-2 border border-slate-200 rounded-lg text-sm bg-white"
+                                        value={filterPeriod.end}
+                                        onChange={e => setFilterPeriod({ ...filterPeriod, end: e.target.value })}
+                                    />
+                                </div>
+                                {(filterStatus || filterPeriod.start || filterPeriod.end) && (
+                                    <button
+                                        onClick={() => { setFilterStatus(''); setFilterPeriod({ start: '', end: '' }); }}
+                                        className="px-3 py-2 text-red-500 text-sm font-medium hover:bg-red-50 rounded-lg self-end"
+                                    >
+                                        Limpar
+                                    </button>
+                                )}
                             </div>
-                            <div className="flex-1 min-w-[200px]">
-                                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Até (Início)</label>
-                                <input
-                                    type="date"
-                                    className="w-full p-2 border border-slate-200 rounded-lg text-sm bg-white"
-                                    value={filterPeriod.end}
-                                    onChange={e => setFilterPeriod({ ...filterPeriod, end: e.target.value })}
-                                />
-                            </div>
-                            {(filterStatus || filterPeriod.start || filterPeriod.end) && (
-                                <button
-                                    onClick={() => { setFilterStatus(''); setFilterPeriod({ start: '', end: '' }); }}
-                                    className="px-3 py-2 text-red-500 text-sm font-medium hover:bg-red-50 rounded-lg"
-                                >
-                                    Limpar Filtros
-                                </button>
-                            )}
                         </div>
                     </div>
 
@@ -391,8 +400,7 @@ const Quotes = () => {
                                 key={quote.id}
                                 className={clsx(
                                     "mb-4 rounded-xl shadow-sm border border-slate-100 overflow-hidden hover:shadow-md transition-shadow relative",
-                                    index % 2 === 0 ? "bg-white" : "bg-slate-50", // Alternating Colors
-                                    // Status Border Strip
+                                    index % 2 === 0 ? "bg-white" : "bg-slate-50",
                                     {
                                         'rascunho': "border-l-4 border-l-slate-400",
                                         'enviado': "border-l-4 border-l-blue-500",
@@ -404,7 +412,6 @@ const Quotes = () => {
                                 )}
                             >
                                 <div className="p-6 flex flex-col md:flex-row gap-6 items-start md:items-center justify-between">
-                                    {/* Left: Info */}
                                     <div className="flex-1">
                                         <div className="flex items-center gap-3 mb-2">
                                             <h3 className="font-bold text-slate-800 text-lg">
@@ -419,10 +426,9 @@ const Quotes = () => {
                                         <p className="text-slate-500 text-sm mb-4 flex items-center gap-2">
                                             <span className="font-medium text-slate-700">{quote.client?.name || 'Cliente N/A'}</span>
                                             <span className="text-slate-300">•</span>
-                                            <span>{quote.controlNumber || 'S/N'}</span>
+                                            <span>{quote.controlNumber ? `PROP-${quote.controlNumber}` : 'S/N'}</span>
                                         </p>
 
-                                        {/* Metrics Grid */}
                                         <div className="flex gap-6 text-sm">
                                             <div>
                                                 <p className="text-slate-400 text-xs mb-0.5">Ativos</p>
@@ -445,10 +451,7 @@ const Quotes = () => {
                                         </div>
                                     </div>
 
-                                    {/* Right: Actions & Status */}
                                     <div className="flex items-center gap-4 border-t md:border-t-0 md:border-l border-slate-100 pt-4 md:pt-0 md:pl-6 w-full md:w-auto mt-4 md:mt-0 justify-between md:justify-end">
-
-                                        {/* Status Dropdown */}
                                         <div className="relative">
                                             <select
                                                 className={clsx(
@@ -464,24 +467,17 @@ const Quotes = () => {
                                                 )}
                                                 value={quote.status}
                                                 onChange={(e) => updateStatus(quote.id, e.target.value)}
-                                                disabled={quote.status === 'finalizado' && user.role !== 'admin'} // Lock finalized for non-admins
+                                                disabled={quote.status === 'finalizado' && user.role !== 'admin'}
                                             >
                                                 <option value="rascunho">Rascunho</option>
                                                 <option value="enviado">Enviado</option>
                                                 <option value="aprovado">Aprovado</option>
-                                                {/* Ativo is automated but can be seen */}
                                                 {(quote.status === 'ativo' || quote.status === 'aprovado') && (
                                                     <option value="ativo" disabled>Ativo (Automático)</option>
                                                 )}
                                                 <option value="perdido">Perdido</option>
                                                 <option value="finalizado">Finalizado</option>
                                             </select>
-                                            {/* Custom Chevron since appearance-none removes it */}
-                                            <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-current opacity-50">
-                                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                                                    <path d="M6 9l6 6 6-6" />
-                                                </svg>
-                                            </div>
                                         </div>
 
                                         <div className="flex gap-2">
@@ -528,13 +524,28 @@ const Quotes = () => {
                                             >
                                                 <Printer size={18} />
                                             </button>
+
+                                            {/* Admin Delete */}
+                                            {user.role === 'admin' && (
+                                                <button
+                                                    onClick={() => {
+                                                        if (window.confirm('Tem certeza que deseja excluir este orçamento?')) {
+                                                            deleteQuote(quote.id);
+                                                        }
+                                                    }}
+                                                    className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors ml-2"
+                                                    title="Excluir Orçamento"
+                                                >
+                                                    <Trash2 size={18} />
+                                                </button>
+                                            )}
                                         </div>
                                     </div>
-                                </div>
-                            </div>
+                                </div >
+                            </div >
                         ))}
-                    </div>
-                </div>
+                    </div >
+                </div >
             ) : (
                 /* FORM (New/Edit) */
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -546,6 +557,17 @@ const Quotes = () => {
                                 Detalhes da Campanha
                             </h3>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                {editingId && (
+                                    <div className="md:col-span-2">
+                                        <label className="block text-sm font-medium text-slate-700 mb-1">Número do Orçamento</label>
+                                        <input
+                                            type="text"
+                                            readOnly
+                                            className="w-full p-2 border border-slate-200 rounded-lg bg-slate-100 text-slate-600 font-mono"
+                                            value={quotes.find(q => q.id === editingId)?.controlNumber ? `PROP-${quotes.find(q => q.id === editingId).controlNumber}` : 'Será gerado ao salvar'}
+                                        />
+                                    </div>
+                                )}
                                 <div className="md:col-span-2">
                                     <label className="block text-sm font-medium text-slate-700 mb-1">Nome da Campanha</label>
                                     <input
@@ -601,23 +623,29 @@ const Quotes = () => {
                                         key={asset.id}
                                         onClick={() => toggleAssetSelection(asset.id)}
                                         className={clsx(
-                                            "p-4 rounded-xl border-2 cursor-pointer transition-all relative overflow-hidden",
+                                            "p-3 rounded-lg border cursor-pointer transition-all relative overflow-hidden",
                                             formData.selectedAssetIds.includes(asset.id)
                                                 ? "border-primary bg-primary/5"
                                                 : "border-slate-100 hover:border-slate-300"
                                         )}
                                     >
-                                        <div className="font-bold text-slate-800 pr-6">{asset.name || 'Sem Nome'}</div>
-                                        <div className="text-xs text-slate-500 mt-1 flex items-center gap-1">
-                                            <MapPin size={12} /> {(asset.cidade && asset.bairro) ? `${asset.bairro} - ${asset.cidade}` : (asset.address || 'Localização N/A')}
+                                        <div className="flex justify-between items-start">
+                                            <div className="font-bold text-slate-800 text-sm truncate pr-4">{asset.name || 'Sem Nome'}</div>
+                                            {formData.selectedAssetIds.includes(asset.id) && <div className="text-primary"><Check size={16} /></div>}
                                         </div>
-                                        <div className="text-xs text-slate-400 mt-1">
-                                            {[asset.type, asset.resolution, asset.format].filter(Boolean).join(' • ') || 'Specs N/A'}
+
+                                        <div className="text-[11px] text-slate-500 mt-0.5 flex items-center gap-1">
+                                            <MapPin size={10} /> {(asset.cidade && asset.bairro) ? `${asset.bairro} - ${asset.cidade}` : (asset.address || 'Localização N/A')}
                                         </div>
-                                        <div className="mt-2 font-medium text-primary">
-                                            R$ {((typeof asset.valor_tabela_unit === 'number' ? asset.valor_tabela_unit : Number(asset.daily_rate)) || 0).toLocaleString()}/dia
+
+                                        <div className="flex justify-between items-center mt-2 pt-2 border-t border-slate-100/50">
+                                            <div className="text-[10px] text-slate-400 uppercase tracking-wide">
+                                                {[asset.type, asset.resolution].filter(Boolean).join(' • ')}
+                                            </div>
+                                            <div className="font-bold text-primary text-xs">
+                                                R$ {((typeof asset.valor_tabela_unit === 'number' ? asset.valor_tabela_unit : Number(asset.daily_rate)) || 0).toLocaleString()}/dia
+                                            </div>
                                         </div>
-                                        {formData.selectedAssetIds.includes(asset.id) && <div className="absolute top-2 right-2 text-primary"><Check size={20} /></div>}
                                     </div>
                                 ))}
                             </div>
@@ -633,7 +661,7 @@ const Quotes = () => {
                                 <span className="w-6 h-6 rounded-full bg-primary text-white flex items-center justify-center text-xs">3</span>
                                 Condições
                             </h3>
-                            <div className="grid grid-cols-1 gap-4">
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                 <div>
                                     <label className="block text-sm font-medium text-slate-700 mb-1">Duração (Dias)</label>
                                     <input
@@ -646,13 +674,15 @@ const Quotes = () => {
                                 </div>
                                 <div>
                                     <label className="block text-sm font-medium text-slate-700 mb-1">Cotas</label>
-                                    <input
-                                        type="number"
-                                        min="1"
-                                        className="w-full p-2 border border-slate-200 rounded-lg"
+                                    <select
+                                        className="w-full p-2 border border-slate-200 rounded-lg bg-white"
                                         value={formData.quotas}
-                                        onChange={e => setFormData({ ...formData, quotas: parseInt(e.target.value) || 1 })}
-                                    />
+                                        onChange={e => setFormData({ ...formData, quotas: parseFloat(e.target.value) || 1 })}
+                                    >
+                                        <option value={0.5}>0.5 (Meia Cota)</option>
+                                        <option value={1}>1 (Cota Inteira)</option>
+                                        <option value={2}>2 (Cota Dupla)</option>
+                                    </select>
                                 </div>
                                 <div>
                                     <label className="block text-sm font-medium text-slate-700 mb-1">Desconto (%)</label>
@@ -732,7 +762,7 @@ const Quotes = () => {
                     </div>
                 </div>
             )}
-        </div>
+        </div >
     );
 };
 
