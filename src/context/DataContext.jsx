@@ -13,6 +13,11 @@ export const DataProvider = ({ children }) => {
     const [maintenances, setMaintenances] = useState([]);
     const [inventory, setInventory] = useState([]);
     const [transactions, setTransactions] = useState([]);
+    const [suppliers, setSuppliers] = useState([]); // [NEW]
+    const [productionOrders, setProductionOrders] = useState([]); // [NEW]
+    const [movements, setMovements] = useState([]); // [NEW]
+    const [mediaFiles, setMediaFiles] = useState([]); // NEW - Programming Module
+    const [playlistItems, setPlaylistItems] = useState([]); // NEW - Programming Module
     const [loading, setLoading] = useState(true);
 
     // --- FETCH DATA ---
@@ -26,14 +31,24 @@ export const DataProvider = ({ children }) => {
                     { data: quotesData },
                     { data: maintenancesData },
                     { data: inventoryData },
-                    { data: transactionsData }
+                    { data: transactionsData },
+                    { data: suppliersData }, // [NEW]
+                    { data: productionOrdersData }, // [NEW]
+                    { data: movementsData }, // [NEW]
+                    { data: mediaFilesData }, // NEW
+                    { data: playlistItemsData } // NEW
                 ] = await Promise.all([
                     supabase.from('clients').select('*'),
                     supabase.from('assets').select('*'),
                     supabase.from('quotes').select('*'),
                     supabase.from('maintenances').select('*'),
                     supabase.from('inventory').select('*'),
-                    supabase.from('transactions').select('*')
+                    supabase.from('transactions').select('*'),
+                    supabase.from('suppliers').select('*'), // [NEW]
+                    supabase.from('production_orders').select('*, production_items(*)'), // [NEW] fetch with items
+                    supabase.from('inventory_movements').select('*').order('created_at', { ascending: false }).limit(100), // [NEW] limit for perf
+                    supabase.from('media_files').select('*').order('created_at', { ascending: false }), // NEW
+                    supabase.from('playlist_items').select('*') // NEW
                 ]);
 
                 if (clientsData) setClients(clientsData);
@@ -42,6 +57,11 @@ export const DataProvider = ({ children }) => {
                 if (maintenancesData) setMaintenances(maintenancesData);
                 if (inventoryData) setInventory(inventoryData);
                 if (transactionsData) setTransactions(transactionsData);
+                if (suppliersData) setSuppliers(suppliersData); // [NEW]
+                if (productionOrdersData) setProductionOrders(productionOrdersData); // [NEW]
+                if (movementsData) setMovements(movementsData); // [NEW]
+                if (mediaFilesData) setMediaFiles(mediaFilesData); // [NEW]
+                if (playlistItemsData) setPlaylistItems(playlistItemsData); // [NEW]
 
             } catch (error) {
                 console.error("Error fetching data:", error);
@@ -266,16 +286,108 @@ export const DataProvider = ({ children }) => {
     const addInventoryItem = async (item) => {
         const { data, error } = await supabase.from('inventory').insert([item]).select();
         if (!error && data) setInventory(prev => [...prev, data[0]]);
+        return { data, error };
     };
 
     const updateInventoryItem = async (updatedItem) => {
         const { error } = await supabase.from('inventory').update(updatedItem).eq('id', updatedItem.id);
         if (!error) setInventory(prev => prev.map(i => i.id === updatedItem.id ? updatedItem : i));
+        return { error };
     };
 
     const deleteInventoryItem = async (id) => {
         const { error } = await supabase.from('inventory').delete().eq('id', id);
         if (!error) setInventory(prev => prev.filter(i => i.id !== id));
+        return { error };
+    };
+
+    // [NEW] Inventory Movement (Stock In/Out/Adjustment)
+    const addInventoryMovement = async (movement) => {
+        // 1. Log movement
+        const { data: moveData, error: moveError } = await supabase.from('inventory_movements').insert([movement]).select();
+        if (moveError) return { error: moveError };
+
+        // 2. Update Item Quantity
+        const item = inventory.find(i => i.id === movement.item_id);
+        if (!item) return { error: "Item not found" };
+
+        const newQty = (Number(item.quantity) || 0) + Number(movement.quantity); // movement.quantity should be signed (+/-)
+
+        const { error: updateError } = await supabase.from('inventory').update({ quantity: newQty }).eq('id', item.id);
+
+        if (!updateError) {
+            setMovements(prev => [moveData[0], ...prev]);
+            setInventory(prev => prev.map(i => i.id === item.id ? { ...i, quantity: newQty } : i));
+        }
+        return { error: updateError };
+    };
+
+    // [NEW] SUPPLIERS ACTIONS
+    const addSupplier = async (supplier) => {
+        const { data, error } = await supabase.from('suppliers').insert([supplier]).select();
+        if (!error && data) setSuppliers(prev => [...prev, data[0]]);
+        return { data, error };
+    };
+
+    const updateSupplier = async (updated) => {
+        const { error } = await supabase.from('suppliers').update(updated).eq('id', updated.id);
+        if (!error) setSuppliers(prev => prev.map(s => s.id === updated.id ? updated : s));
+        return { error };
+    };
+
+    const deleteSupplier = async (id) => {
+        const { error } = await supabase.from('suppliers').delete().eq('id', id);
+        if (!error) setSuppliers(prev => prev.filter(s => s.id !== id));
+        return { error };
+    };
+
+    // [NEW] PRODUCTION ACTIONS
+    const addProductionOrder = async (order, items) => {
+        // 1. Create Order
+        const { data: orderData, error: orderError } = await supabase.from('production_orders').insert([order]).select();
+        if (orderError) return { error: orderError };
+
+        const orderId = orderData[0].id;
+
+        // 2. Create Items
+        const itemsWithId = items.map(Item => ({ ...Item, production_order_id: orderId }));
+        const { error: itemsError } = await supabase.from('production_items').insert(itemsWithId);
+
+        if (!itemsError) {
+            setProductionOrders(prev => [...prev, { ...orderData[0], production_items: itemsWithId }]);
+        }
+        return { error: itemsError };
+    };
+
+    const updateProductionOrderStatus = async (id, status) => {
+        const { error } = await supabase.from('production_orders').update({ status }).eq('id', id);
+        if (!error) setProductionOrders(prev => prev.map(p => p.id === id ? { ...p, status } : p));
+        return { error };
+    };
+
+    // [NEW] PROGRAMMING MODULE ACTIONS
+    const uploadMediaFile = async (fileData) => {
+        const { data, error } = await supabase.from('media_files').insert([fileData]).select();
+        if (!error && data) setMediaFiles(prev => [data[0], ...prev]);
+        return { data, error };
+    };
+
+    const updateMediaStatus = async (id, status) => {
+        const { error } = await supabase.from('media_files').update({ status }).eq('id', id);
+        if (!error) setMediaFiles(prev => prev.map(m => m.id === id ? { ...m, status } : m));
+        return { error };
+    };
+
+    const addPlaylistItem = async (item) => {
+        const { data, error } = await supabase.from('playlist_items').insert([item]).select();
+        if (!error && data) setPlaylistItems(prev => [...prev, data[0]]);
+        return { data, error };
+    };
+
+    const deletePlaylistItem = async (id) => {
+        const { error } = await supabase.from('playlist_items').delete().eq('id', id);
+        if (!error) setPlaylistItems(prev => prev.filter(p => p.id !== id));
+        return { error };
     };
 
     // --- TRANSACTIONS ACTIONS ---
@@ -301,7 +413,11 @@ export const DataProvider = ({ children }) => {
             assets, addAsset, updateAsset, deleteAsset, importAssets,
             quotes, addQuote, updateQuote, deleteQuote,
             maintenances, addMaintenance, updateMaintenance, deleteMaintenance,
-            inventory, addInventoryItem, updateInventoryItem, deleteInventoryItem,
+            inventory, addInventoryItem, updateInventoryItem, deleteInventoryItem, addInventoryMovement, movements,
+            suppliers, addSupplier, updateSupplier, deleteSupplier,
+            productionOrders, addProductionOrder, updateProductionOrderStatus,
+            mediaFiles, uploadMediaFile, updateMediaStatus,
+            playlistItems, addPlaylistItem, deletePlaylistItem,
             transactions, addTransaction, updateTransaction, deleteTransaction
         }}>
             {children}

@@ -23,9 +23,11 @@ import {
 import clsx from 'clsx';
 import { useAuth } from '../context/AuthContext';
 import logo from '../assets/logo.png';
+import MediaLibrary from '../components/programming/MediaLibrary';
+import SchedulingModal from '../components/programming/SchedulingModal';
 
 const Programming = () => {
-    const { assets, quotes, updateQuote } = useData();
+    const { assets, quotes, updateQuote, mediaFiles, playlistItems } = useData();
     const { user } = useAuth();
     const [activeTab, setActiveTab] = useState('planning'); // planning, daily, content
     const [currentDate, setCurrentDate] = useState(new Date());
@@ -51,6 +53,8 @@ const Programming = () => {
     const [gridSelection, setGridSelection] = useState(null); // { bookings: [], day: Date, assetName: string }
     const [viewAssetsModalOpen, setViewAssetsModalOpen] = useState(false);
     const [selectedCampaignForAssets, setSelectedCampaignForAssets] = useState(null);
+    const [showSchedulingModal, setShowSchedulingModal] = useState(false);
+    const [schedulingDefaults, setSchedulingDefaults] = useState({ asset: null, date: null });
 
     // --- HELPERS ---
     const getDaysInMonth = (date) => {
@@ -61,34 +65,68 @@ const Programming = () => {
     };
 
     const getBookings = (assetId, dateObj) => {
-        // Use local YYYY-MM-DD to match the input[type="date"] values stored in quotes
+        // Use local YYYY-MM-DD to match the input[type="date"] values stored in playlist
         const offset = dateObj.getTimezoneOffset();
         const localDate = new Date(dateObj.getTime() - (offset * 60 * 1000));
         const dateStr = localDate.toISOString().split('T')[0];
 
-        return quotes.filter(q => {
-            if (!['aprovado', 'ativo', 'finalizado'].includes(q.status)) return false;
-            const start = q.startDate;
-            const end = q.endDate;
-            const assetIncluded = q.assets.some(a => a.id === assetId);
-            return assetIncluded && dateStr >= start && dateStr <= end;
+        // Filter playlistItems
+        // We need 'mediaFiles' to resolve name since playlistItem has media_id
+        const items = playlistItems.filter(p => {
+            // Date Range Check
+            if (!(dateStr >= p.start_date && dateStr <= p.end_date)) return false;
+            // Asset Check
+            if (p.asset_id !== assetId) return false;
+            // Days of Week Check
+            const dayName = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][dateObj.getDay()];
+            if (!p.days_of_week.includes(dayName)) return false;
+
+            return true;
+        });
+
+        // Enrich with Media Name
+        return items.map(item => {
+            const media = mediaFiles.find(m => m.id === item.media_id);
+            return {
+                ...item,
+                campaignName: media ? media.name : 'Unknown Media',
+                status: 'approved', // Playlist items are inherently active if scheduled
+                mediaStatus: 'received',
+                startDate: item.start_date,
+                endDate: item.end_date
+            };
         });
     };
 
     const getBookingsInRange = (assetId, startStr, endStr) => {
-        return quotes.filter(q => {
-            if (!['aprovado', 'ativo', 'finalizado'].includes(q.status)) return false;
-
-            // Campaign Range
-            const campStart = q.startDate;
-            const campEnd = q.endDate;
-
+        return playlistItems.filter(p => {
             // Asset Check
-            const assetIncluded = q.assets.some(a => a.id === assetId);
-            if (!assetIncluded) return false;
+            if (p.asset_id !== assetId) return false;
 
             // Overlap Check: (StartA <= EndB) and (EndA >= StartB)
-            return (campStart <= endStr) && (campEnd >= startStr);
+            // p.start_date/end_date are strings YYYY-MM-DD
+            if (!(p.start_date <= endStr && p.end_date >= startStr)) return false;
+
+            return true;
+        }).map(item => {
+            const media = mediaFiles.find(m => m.id === item.media_id);
+            // Mock Client Name if not available, or derive from Media/Project
+            // For now, we don't have direct client link in item, but media has client_id (which is UUID or Text)
+            // We can try to find client name if we had clients context, but for now fallback to 'Cliente' or similar.
+            // Actually, getBookings didn't map client, but the grid usage tried to access booking.client.name.
+            // I should make sure returned object HAS client object structure or usage changes.
+            // The Daily View (lines 949) accesses booking.client.name.
+            // Media file has client_id.
+
+            return {
+                ...item,
+                campaignName: media ? media.name : 'Mídia Desconhecida',
+                client: { name: media ? `Cliente (${media.client_id})` : 'Cliente N/A' }, // Mocking client object to prevent crash
+                status: 'ativo',
+                mediaStatus: media ? media.status : 'pending',
+                startDate: item.start_date,
+                endDate: item.end_date
+            };
         });
     };
 
@@ -521,66 +559,7 @@ const Programming = () => {
             }
 
             {/* GRID SELECTION MODAL */}
-            {gridSelection && (
-                <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fadeIn">
-                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-slideUp">
-                        <div className="bg-slate-50 p-4 border-b border-slate-100 flex justify-between items-center">
-                            <div>
-                                <h3 className="font-bold text-slate-800 flex items-center gap-2">
-                                    <Calendar size={18} className="text-primary" />
-                                    Detalhes da Programação
-                                </h3>
-                                <div className="text-xs text-slate-500 mt-1 flex flex-col">
-                                    <span className="font-bold text-slate-700">{gridSelection.assetName}</span>
-                                    <span>{gridSelection.day.toLocaleDateString('pt-BR', { day: 'numeric', month: 'long', year: 'numeric' })}</span>
-                                </div>
-                            </div>
-                            <button onClick={() => setGridSelection(null)} className="text-slate-400 hover:text-slate-600">
-                                <X size={20} />
-                            </button>
-                        </div>
 
-                        <div className="p-4 space-y-3 max-h-[60vh] overflow-y-auto">
-                            {gridSelection.bookings.length === 0 ? (
-                                <p className="text-slate-400 text-center italic py-4">Nenhuma reserva.</p>
-                            ) : (
-                                gridSelection.bookings.map((booking, idx) => (
-                                    <div key={idx} className="bg-white border border-slate-200 rounded-lg p-3 shadow-sm hover:border-primary/30 transition-colors">
-                                        <div className="flex justify-between items-start mb-2">
-                                            <h4 className="font-bold text-slate-800 text-sm">{booking.campaignName}</h4>
-                                            <span className={clsx("text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider",
-                                                booking.status === 'ativo' ? "bg-emerald-100 text-emerald-700" :
-                                                    booking.status === 'aprovado' ? "bg-indigo-100 text-indigo-700" : "bg-slate-100 text-slate-600"
-                                            )}>
-                                                {booking.status}
-                                            </span>
-                                        </div>
-                                        <div className="text-xs text-slate-500 space-y-1">
-                                            <p><span className="font-medium text-slate-600">Cliente:</span> {booking.client.name}</p>
-                                            <p><span className="font-medium text-slate-600">Período:</span> {new Date(booking.startDate).toLocaleDateString()} a {new Date(booking.endDate).toLocaleDateString()}</p>
-                                            <p className="flex items-center gap-1.5 mt-1">
-                                                <span className="font-medium text-slate-600">Mídia:</span>
-                                                <span className={clsx("text-[10px] font-bold px-1.5 py-0.5 rounded uppercase",
-                                                    booking.mediaStatus === 'received' ? "bg-emerald-100 text-emerald-700" :
-                                                        booking.mediaStatus === 'rejected' ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
-                                                )}>
-                                                    {booking.mediaStatus === 'received' ? 'OK' : booking.mediaStatus === 'rejected' ? 'REFUGADA' : 'PENDENTE'}
-                                                </span>
-                                            </p>
-                                        </div>
-                                    </div>
-                                ))
-                            )}
-                        </div>
-
-                        <div className="p-4 border-t border-slate-100 bg-slate-50 text-center">
-                            <button onClick={() => setGridSelection(null)} className="px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm font-bold text-slate-600 hover:bg-slate-50 w-full">
-                                Fechar
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
 
             {/* TOOLTIP PORTAL */}
             {tooltipBox.visible && (
@@ -596,32 +575,43 @@ const Programming = () => {
             )}
 
             {/* HEADER - Hidden on Print */}
-            <div className="flex justify-between items-center mb-8 print:hidden">
-                <div>
-                    <h1 className="text-3xl font-bold text-slate-800 flex items-center gap-3">
-                        Programação & Grade
-                    </h1>
-                    <p className="text-slate-500 mt-1">Gestão profissional de exibição e mídia</p>
-                </div>
-                <div className="flex gap-3">
-                    <button
-                        onClick={handlePrint}
-                        className="flex items-center gap-2 px-4 py-2 border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 font-medium transition-colors"
-                    >
-                        <Printer size={18} /> Imprimir / Exportar
-                    </button>
-                    <div className="relative">
-                        <Search className="absolute left-3 top-2.5 text-slate-400" size={18} />
-                        <input
-                            type="text"
-                            placeholder="Filtrar Paineis..."
-                            value={assetFilter}
-                            onChange={(e) => setAssetFilter(e.target.value)}
-                            className="pl-9 pr-4 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20"
-                        />
+            {activeTab !== 'content' && (
+                <div className="flex justify-between items-center mb-8 print:hidden">
+                    <div>
+                        <h1 className="text-3xl font-bold text-slate-800 flex items-center gap-3">
+                            Programação & Grade
+                        </h1>
+                        <p className="text-slate-500 mt-1">Gestão profissional de exibição e mídia</p>
+                    </div>
+                    <div className="flex gap-3">
+                        <button
+                            onClick={() => {
+                                setSchedulingDefaults({ asset: null, date: null });
+                                setShowSchedulingModal(true);
+                            }}
+                            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-bold shadow-lg shadow-indigo-600/20 transition-transform active:scale-95"
+                        >
+                            <Calendar size={18} /> Novo Agendamento
+                        </button>
+                        <button
+                            onClick={handlePrint}
+                            className="flex items-center gap-2 px-4 py-2 border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 font-medium transition-colors"
+                        >
+                            <Printer size={18} /> Imprimir / Exportar
+                        </button>
+                        <div className="relative">
+                            <Search className="absolute left-3 top-2.5 text-slate-400" size={18} />
+                            <input
+                                type="text"
+                                placeholder="Filtrar Paineis..."
+                                value={assetFilter}
+                                onChange={(e) => setAssetFilter(e.target.value)}
+                                className="pl-9 pr-4 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20"
+                            />
+                        </div>
                     </div>
                 </div>
-            </div>
+            )}
 
             {/* NAV TABS - Hidden on Print */}
             <div className="bg-white rounded-t-xl border-b border-slate-200 flex print:hidden">
@@ -632,7 +622,7 @@ const Programming = () => {
                     <MonitorPlay size={18} /> Programação Diária
                 </button>
                 <button onClick={() => setActiveTab('content')} className={clsx("flex items-center gap-2 px-6 py-4 border-b-2 font-medium transition-colors", activeTab === 'content' ? "border-primary text-primary bg-primary/5" : "border-transparent text-slate-500 hover:text-slate-700")}>
-                    <Film size={18} /> Controle de Mídia
+                    <Film size={18} /> Biblioteca de Mídia
                 </button>
                 <button onClick={() => setActiveTab('active')} className={clsx("flex items-center gap-2 px-6 py-4 border-b-2 font-medium transition-colors", activeTab === 'active' ? "border-primary text-primary bg-primary/5" : "border-transparent text-slate-500 hover:text-slate-700")}>
                     <Play size={18} /> Campanhas Ativas
@@ -642,7 +632,7 @@ const Programming = () => {
                 </button>
             </div>
 
-            <div className="bg-white rounded-b-xl shadow-sm border border-t-0 border-slate-200 min-h-[600px] p-6 text-sm print:shadow-none print:border-0 print:p-0">
+            <div className={clsx("bg-white rounded-b-xl shadow-sm border border-t-0 border-slate-200 min-h-[600px] text-sm print:shadow-none print:border-0 print:p-0", activeTab === 'content' ? 'p-0' : 'p-6')}>
 
                 {/* --- VIEW: PLANNING (GRID) --- */}
                 {activeTab === 'planning' && (
@@ -954,7 +944,14 @@ const Programming = () => {
                     </div>
                 )}
 
-                {/* --- TAB: ACTIVE CAMPAIGNS --- */}
+                {/* --- VIEW: MEDIA LIBRARY --- */}
+                {activeTab === 'content' && (
+                    <MediaLibrary />
+                )}
+
+
+
+                {/* --- VIEW: ACTIVE CAMPAIGNS --- */}
                 {activeTab === 'active' && (
                     <div className="animate-fadeIn">
                         <div className="flex items-center justify-between mb-6">
@@ -1034,228 +1031,25 @@ const Programming = () => {
                     </div>
                 )}
 
-                {/* --- TAB: MEDIA HISTORY --- */}
+                {/* --- VIEW: HISTORY --- */}
                 {activeTab === 'history' && (
-                    <div className="bg-white rounded-b-xl border border-t-0 border-slate-200 p-6 shadow-sm animate-fadeIn">
-                        <div className="flex items-center justify-between mb-6">
-                            <h2 className="text-lg font-bold text-slate-800">Log de Recebimento de Mídias</h2>
-                            <button
-                                onClick={() => generateHistoryPDF(quotes)}
-                                className="text-sm text-primary font-bold hover:underline flex items-center gap-1"
-                            >
-                                <Printer size={16} /> Exportar Log
-                            </button>
-                        </div>
-
-                        <div className="overflow-x-auto rounded-lg border border-slate-200">
-                            <table className="w-full text-left">
-                                <thead className="bg-slate-50 border-b border-slate-200">
-                                    <tr>
-                                        <th className="p-4 text-xs font-bold text-slate-500 uppercase">Data / Hora</th>
-                                        <th className="p-4 text-xs font-bold text-slate-500 uppercase">Campanha</th>
-                                        <th className="p-4 text-xs font-bold text-slate-500 uppercase">Cliente</th>
-                                        <th className="p-4 text-xs font-bold text-slate-500 uppercase">Status</th>
-                                        <th className="p-4 text-xs font-bold text-slate-500 uppercase">Usuário</th>
-                                        <th className="p-4 text-xs font-bold text-slate-500 uppercase">Observação</th>
-                                    </tr>
-                                </thead>
-                                <tbody className="divide-y divide-slate-100">
-                                    {/* Aggregate History Logic */}
-                                    {(() => {
-                                        const allHistory = [];
-                                        quotes.forEach(quote => {
-                                            if (quote.mediaHistory && quote.mediaHistory.length > 0) {
-                                                quote.mediaHistory.forEach(h => {
-                                                    allHistory.push({
-                                                        ...h,
-                                                        campaignName: quote.campaignName,
-                                                        clientName: quote.client.name,
-                                                        quoteId: quote.id
-                                                    });
-                                                });
-                                            }
-                                        });
-
-                                        // Sort by Date Descending
-                                        allHistory.sort((a, b) => new Date(b.date) - new Date(a.date));
-
-                                        if (allHistory.length === 0) {
-                                            return (
-                                                <tr>
-                                                    <td colSpan="6" className="p-8 text-center text-slate-400 italic">
-                                                        Nenhum registro de histórico encontrado.
-                                                    </td>
-                                                </tr>
-                                            );
-                                        }
-
-                                        return allHistory.map((item, index) => (
-                                            <tr key={index} className="hover:bg-slate-50 transition-colors">
-                                                <td className="p-4 text-sm text-slate-600 whitespace-nowrap">
-                                                    {new Date(item.date).toLocaleString()}
-                                                </td>
-                                                <td className="p-4 text-sm font-bold text-slate-800">
-                                                    {item.campaignName}
-                                                </td>
-                                                <td className="p-4 text-sm text-slate-600">
-                                                    {item.clientName}
-                                                </td>
-                                                <td className="p-4">
-                                                    <span className={clsx("px-2 py-1 rounded-full text-xs font-bold uppercase tracking-wider",
-                                                        item.status === 'received' ? "bg-emerald-100 text-emerald-700" :
-                                                            item.status === 'rejected' ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
-                                                    )}>
-                                                        {item.status === 'received' ? 'Recebido' : item.status === 'rejected' ? 'Refugado' : 'Pendente'}
-                                                    </span>
-                                                </td>
-                                                <td className="p-4 text-sm text-slate-500">
-                                                    {item.user}
-                                                </td>
-                                                <td className="p-4 text-sm text-slate-500 italic max-w-xs truncate">
-                                                    {item.note || '-'}
-                                                </td>
-                                            </tr>
-                                        ));
-                                    })()}
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-                )}
-                {activeTab === 'content' && (
-                    <div className="animate-fadeIn">
-                        {/* Search Toolbar */}
-                        <div className="flex gap-4 mb-6">
-                            <div className="relative flex-1 max-w-md">
-                                <Search className="absolute left-3 top-2.5 text-slate-400" size={20} />
-                                <input
-                                    type="text"
-                                    placeholder="Buscar campanha ou cliente..."
-                                    className="w-full pl-10 p-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20"
-                                    value={searchTerm}
-                                    onChange={e => setSearchTerm(e.target.value)}
-                                />
-                            </div>
-                        </div>
-
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            {filteredContentQuotes.length > 0 ? filteredContentQuotes.map(quote => (
-                                <div key={quote.id} className="border border-slate-200 rounded-xl p-5 hover:shadow-md transition-shadow bg-white flex flex-col justify-between group">
-                                    <div>
-                                        <div className="flex justify-between items-start mb-2">
-                                            <h3 className="font-bold text-slate-800 text-lg group-hover:text-primary transition-colors">{quote.campaignName}</h3>
-                                            <span className={clsx(
-                                                "px-2 py-1 rounded text-[10px] font-bold uppercase",
-                                                quote.mediaStatus === 'received' ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"
-                                            )}>
-                                                {quote.mediaStatus === 'received' ? 'Mídia OK' : 'Pendente'}
-                                            </span>
-                                        </div>
-                                        <p className="text-sm text-slate-500 mb-4">{quote.client.name} • {quote.controlNumber || 'S/N'}</p>
-
-                                        <div className="grid grid-cols-2 gap-4 text-xs text-slate-500 bg-slate-50 p-3 rounded-lg border border-slate-100 mb-4">
-                                            <div><span className="block font-bold text-slate-700">Início</span> {new Date(quote.startDate).toLocaleDateString()}</div>
-                                            <div><span className="block font-bold text-slate-700">Fim</span> {new Date(quote.endDate).toLocaleDateString()}</div>
-                                            <div className="col-span-2"><span className="block font-bold text-slate-700">Paineis ({quote.assets.length})</span> <span className="line-clamp-1">{quote.assets.map(a => a.name).join(', ')}</span></div>
-                                        </div>
-                                    </div>
-
-                                    <div className="flex gap-3 pt-4 border-t border-slate-100">
-                                        <button
-                                            onClick={() => handleOpenHistory(quote)}
-                                            className={clsx(
-                                                "flex-1 flex items-center justify-center gap-2 py-2 rounded-lg font-medium transition-colors text-sm",
-                                                quote.mediaStatus === 'received'
-                                                    ? "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                                                    : "bg-emerald-600 text-white hover:bg-emerald-700"
-                                            )}
-                                        >
-                                            {quote.mediaStatus === 'received' ? <><History size={16} /> Gerenciar / Revogar</> : <><CheckCircle size={16} /> Confirmar / Gerenciar</>}
-                                        </button>
-                                    </div>
-                                </div>
-                            )) : (
-                                <div className="col-span-2 text-center py-12 text-slate-400">Nenhuma campanha ativa encontrada.</div>
-                            )}
-                        </div>
+                    <div className="p-8 text-center text-slate-400">
+                        <History size={48} className="mx-auto mb-4 opacity-50" />
+                        <p>Histórico de Logs de Mídia em desenvolvimento.</p>
                     </div>
                 )}
             </div>
 
-            {/* --- BOOKING DETAILS MODAL --- */}
-            {selectedBooking && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 animate-fadeIn">
-                    <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden">
-                        <div className="bg-slate-50 p-6 border-b border-slate-100 flex justify-between items-start">
-                            <div>
-                                <h2 className="text-xl font-bold text-slate-800 pr-4 leading-tight">{selectedBooking.campaignName}</h2>
-                                <p className="text-slate-500 text-sm mt-1">{selectedBooking.client.name}</p>
-                            </div>
-                            <button onClick={() => setSelectedBooking(null)} className="text-slate-400 hover:text-slate-600 p-1"><X size={24} /></button>
-                        </div>
+            {/* --- MODALS --- */}
 
-                        <div className="p-6 space-y-6">
-                            {/* Status Cards */}
-                            <div className="grid grid-cols-2 gap-4">
-                                <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
-                                    <span className="text-xs text-slate-500 font-bold uppercase block mb-1">Status Comercial</span>
-                                    <span className="text-primary font-bold flex items-center gap-1 capitalize"><CheckCircle size={14} /> {selectedBooking.status}</span>
-                                </div>
-                                <div className={clsx("p-3 rounded-xl border", selectedBooking.mediaStatus === 'received' ? "bg-emerald-50 border-emerald-100" : "bg-amber-50 border-amber-100")}>
-                                    <span className={clsx("text-xs font-bold uppercase block mb-1", selectedBooking.mediaStatus === 'received' ? "text-emerald-600" : "text-amber-600")}>Status Mídia</span>
-                                    <span className={clsx("font-bold flex items-center gap-1", selectedBooking.mediaStatus === 'received' ? "text-emerald-700" : "text-amber-700")}>
-                                        {selectedBooking.mediaStatus === 'received' ? <><Play size={14} /> Pronta para Exibição</> : <><AlertCircle size={14} /> Aguardando Arquivos</>}
-                                    </span>
-                                </div>
-                            </div>
+            <SchedulingModal
+                isOpen={showSchedulingModal}
+                onClose={() => setShowSchedulingModal(false)}
+                preselectedAsset={schedulingDefaults.asset}
+                preselectedDate={schedulingDefaults.date}
+            />
 
-                            {/* Date Info */}
-                            <div className="flex items-center gap-4 bg-slate-50 p-4 rounded-xl border border-slate-100">
-                                <div className="flex-1">
-                                    <span className="text-xs text-slate-400 font-bold uppercase block mb-1">Início</span>
-                                    <div className="font-bold text-slate-700">{new Date(selectedBooking.startDate).toLocaleDateString()}</div>
-                                </div>
-                                <div className="text-slate-300"><ChevronRight /></div>
-                                <div className="flex-1 text-right">
-                                    <span className="text-xs text-slate-400 font-bold uppercase block mb-1">Fim</span>
-                                    <div className="font-bold text-slate-700">{new Date(selectedBooking.endDate).toLocaleDateString()}</div>
-                                </div>
-                            </div>
-
-                            {/* Involved Assets */}
-                            <div>
-                                <h4 className="font-bold text-slate-800 text-sm mb-3 flex items-center gap-2"><MonitorPlay size={16} className="text-primary" /> Paineis Vinculados ({selectedBooking.assets.length})</h4>
-                                <div className="flex flex-wrap gap-2">
-                                    {selectedBooking.assets.map(a => (
-                                        <span key={a.id} className="text-xs bg-slate-100 text-slate-600 px-2 py-1 rounded border border-slate-200">{a.name}</span>
-                                    ))}
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="p-6 border-t border-slate-100 bg-slate-50 flex gap-3">
-                            <button
-                                onClick={() => {
-                                    handleOpenHistory(selectedBooking);
-                                    // Close the details modal since we are opening the history modal
-                                    setSelectedBooking(null);
-                                }}
-                                className={clsx(
-                                    "flex-1 py-3 rounded-xl font-bold transition-all shadow-sm flex items-center justify-center gap-2",
-                                    selectedBooking.mediaStatus === 'received'
-                                        ? "bg-white border border-slate-300 text-slate-600 hover:bg-slate-50"
-                                        : "bg-primary text-white hover:bg-primary-dark"
-                                )}
-                            >
-                                <History size={18} />
-                                {selectedBooking.mediaStatus === 'received' ? "Gerenciar Status (Histórico)" : "Confirmar / Gerenciar Mídia"}
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* --- VIEW ASSETS MODAL (Active Campaigns) --- */}
+            {/* View Assets Modal */}
             {viewAssetsModalOpen && selectedCampaignForAssets && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4 animate-fadeIn">
                     <div className="bg-white rounded-2xl shadow-2xl max-w-4xl w-full overflow-hidden max-h-[90vh] flex flex-col">
@@ -1270,10 +1064,7 @@ const Programming = () => {
                         <div className="p-6 overflow-y-auto">
                             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                                 {selectedCampaignForAssets.assets.map(assetStart => {
-                                    // HYDRATE ASSET: Get fresh data from global context
-                                    // Use distinct hydration to ensure we get the latest photo
                                     const asset = assets.find(a => String(a.id) === String(assetStart.id)) || assetStart;
-
                                     return (
                                         <div key={`${asset.id}-${asset.photo?.length || 0}`} className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-sm hover:shadow-md transition-shadow group">
                                             <div className="h-40 bg-slate-100 relative overflow-hidden">
@@ -1309,6 +1100,68 @@ const Programming = () => {
                                 onClick={() => setViewAssetsModalOpen(false)}
                                 className="px-6 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold rounded-lg transition-colors"
                             >
+                                Fechar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Grid Selection Modal */}
+            {gridSelection && (
+                <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fadeIn">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-slideUp">
+                        <div className="bg-slate-50 p-4 border-b border-slate-100 flex justify-between items-center">
+                            <div>
+                                <h3 className="font-bold text-slate-800 flex items-center gap-2">
+                                    <Calendar size={18} className="text-primary" />
+                                    Detalhes da Programação
+                                </h3>
+                                <div className="text-xs text-slate-500 mt-1 flex flex-col">
+                                    <span className="font-bold text-slate-700">{gridSelection.assetName}</span>
+                                    <span>{gridSelection.day.toLocaleDateString('pt-BR', { day: 'numeric', month: 'long', year: 'numeric' })}</span>
+                                </div>
+                            </div>
+                            <button onClick={() => setGridSelection(null)} className="text-slate-400 hover:text-slate-600">
+                                <X size={20} />
+                            </button>
+                        </div>
+
+                        <div className="p-4 space-y-3 max-h-[60vh] overflow-y-auto">
+                            {gridSelection.bookings.length === 0 ? (
+                                <p className="text-slate-400 text-center italic py-4">Nenhuma reserva.</p>
+                            ) : (
+                                gridSelection.bookings.map((booking, idx) => (
+                                    <div key={idx} className="bg-white border border-slate-200 rounded-lg p-3 shadow-sm hover:border-primary/30 transition-colors">
+                                        <div className="flex justify-between items-start mb-2">
+                                            <h4 className="font-bold text-slate-800 text-sm">{booking.campaignName || 'Campanha Desconhecida'}</h4>
+                                            <span className={clsx("text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider",
+                                                booking.status === 'ativo' ? "bg-emerald-100 text-emerald-700" :
+                                                    booking.status === 'approved' ? "bg-indigo-100 text-indigo-700" : "bg-slate-100 text-slate-600"
+                                            )}>
+                                                {booking.status || 'Pendente'}
+                                            </span>
+                                        </div>
+                                        <div className="text-xs text-slate-500 space-y-1">
+                                            <p><span className="font-medium text-slate-600">Período:</span> {new Date(booking.start_date || booking.startDate).toLocaleDateString()} a {new Date(booking.end_date || booking.endDate).toLocaleDateString()}</p>
+                                        </div>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+
+                        <div className="p-4 border-t border-slate-100 bg-slate-50 text-center">
+                            <button
+                                onClick={() => {
+                                    setSchedulingDefaults({ asset: { id: gridSelection.assetId, name: gridSelection.assetName }, date: gridSelection.day });
+                                    setGridSelection(null);
+                                    setShowSchedulingModal(true);
+                                }}
+                                className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold shadow hover:bg-indigo-700 w-full mb-2"
+                            >
+                                Adicionar Agendamento
+                            </button>
+                            <button onClick={() => setGridSelection(null)} className="px-4 py-2 bg-white border border-slate-200 rounded-lg text-sm font-bold text-slate-600 hover:bg-slate-50 w-full">
                                 Fechar
                             </button>
                         </div>
